@@ -1,8 +1,11 @@
-use algebra::{Bls12_377, PairingEngine, BW6_761};
 use anyhow::{anyhow, Result};
-use ethers::core::k256::ecdsa::SigningKey;
-use ethers::signers::LocalWallet;
+use ark_bls12_377::Bls12_377;
+use ark_bw6_761::BW6_761;
+use ark_ec::pairing::Pairing;
+use ark_mnt4_753::MNT4_753;
+use ark_mnt6_753::MNT6_753;
 use gumdrop::Options;
+use nimiq_keys::{KeyPair, PrivateKey};
 use phase1::{ContributionMode, Phase1Parameters, ProvingSystem};
 #[allow(unused_imports)]
 use phase1_cli::*;
@@ -11,14 +14,14 @@ use phase2_cli::*;
 use reqwest::header::AUTHORIZATION;
 use secrecy::ExposeSecret;
 use snark_setup_operator::data_structs::{
-    Ceremony, Chunk, ChunkMetadata, Contribution, ContributionMetadata, Parameters, Response,
-    SignedData, VerifiedData,
+    Ceremony, Chunk, ChunkMetadata, Contribution, ContributionMetadata, Parameters, ParticipantId,
+    Response, SignedData, VerifiedData,
 };
 use snark_setup_operator::error::UtilsError;
 use snark_setup_operator::utils::{
-    address_to_string, compute_hash_from_file, get_authorization_value, proving_system_from_str,
-    read_hash_from_file, read_keys, remove_file_if_exists, string_to_phase,
-    upload_file_to_azure_with_access_key_async, upload_mode_from_str, Phase, UploadMode,
+    compute_hash_from_file, get_authorization_value, proving_system_from_str, read_hash_from_file,
+    read_keys, remove_file_if_exists, string_to_phase, upload_file_to_azure_with_access_key_async,
+    upload_mode_from_str, Phase, UploadMode,
 };
 use std::fs::File;
 use std::io::{Read, Write};
@@ -40,14 +43,14 @@ pub struct NewCeremonyOpts {
     #[options(help = "the upload mode", required)]
     pub upload_mode: String,
     #[options(help = "participants")]
-    pub participant: Vec<String>,
+    pub participant: Vec<ParticipantId>,
     #[options(help = "verifiers")]
-    pub verifier: Vec<String>,
+    pub verifier: Vec<ParticipantId>,
     #[options(help = "deployer", required)]
-    pub deployer: String,
+    pub deployer: ParticipantId,
     #[options(
-        help = "the encrypted keys for the Plumo setup",
-        default = "plumo.keys"
+        help = "the encrypted keys for the Nimiq setup",
+        default = "nimiq.keys"
     )]
     pub keys_file: String,
     #[options(help = "storage account in azure mode")]
@@ -82,8 +85,8 @@ pub struct NewCeremonyOpts {
 fn build_ceremony_from_chunks(
     opts: &NewCeremonyOpts,
     chunks: &[Chunk],
-    existing_contributor_ids: &[String],
-    existing_verifier_ids: &[String],
+    existing_contributor_ids: &[ParticipantId],
+    existing_verifier_ids: &[ParticipantId],
 ) -> Result<Ceremony> {
     let chunk_size = 1 << opts.chunk_size;
     let ceremony = Ceremony {
@@ -97,7 +100,7 @@ fn build_ceremony_from_chunks(
         parameters: Parameters {
             proving_system: opts.proving_system.clone(),
             curve_kind: opts.curve.clone(),
-            chunk_size: chunk_size,
+            chunk_size,
             batch_size: chunk_size,
             power: opts.powers,
         },
@@ -116,7 +119,7 @@ fn build_ceremony_from_chunks(
     Ok(ceremony)
 }
 
-async fn run<E: PairingEngine>(opts: &NewCeremonyOpts, private_key: &[u8]) -> Result<()> {
+async fn run<E: Pairing>(opts: &NewCeremonyOpts, key_pair: &[u8]) -> Result<()> {
     let phase = string_to_phase(&opts.phase)?;
     let server_url = Url::parse(opts.server_url.as_str())?.join("ceremony")?;
     let data = reqwest::get(server_url.as_str())
@@ -126,15 +129,12 @@ async fn run<E: PairingEngine>(opts: &NewCeremonyOpts, private_key: &[u8]) -> Re
         .await?;
     let ceremony: Ceremony = serde_json::from_str::<Response<Ceremony>>(&data)?.result;
     let deployer = opts.deployer.clone();
-    let private_key = LocalWallet::from(SigningKey::new(private_key)?);
-    if address_to_string(&private_key.address()) != deployer {
+    let key_pair = KeyPair::from(PrivateKey::from_bytes(key_pair)?);
+    let public_key = key_pair.public.clone();
+    if public_key != deployer {
         return Err(anyhow!("Deployer must match the private key"));
     }
-    if ceremony.version != 0
-        || !ceremony
-            .verifier_ids
-            .contains(&address_to_string(&private_key.address()))
-    {
+    if ceremony.version != 0 || !ceremony.verifier_ids.contains(&public_key) {
         return Err(anyhow!("Can only initialize a ceremony with version 0 and the verifiers list must contain the address matching the private key"));
     }
 
@@ -180,7 +180,7 @@ async fn run<E: PairingEngine>(opts: &NewCeremonyOpts, private_key: &[u8]) -> Re
         let ceremony: Ceremony = serde_json::from_str::<Ceremony>(&ceremony_contents)?;
         info!("Updating ceremony");
         let client = reqwest::Client::new();
-        let authorization = get_authorization_value(&private_key, "PUT", "/ceremony")?;
+        let authorization = get_authorization_value(&key_pair, "PUT", "/ceremony")?;
         client
             .put(server_url.as_str())
             .header(AUTHORIZATION, authorization)
@@ -242,7 +242,7 @@ async fn run<E: PairingEngine>(opts: &NewCeremonyOpts, private_key: &[u8]) -> Re
                     .as_ref()
                     .ok_or(UtilsError::MissingOptionErr)?;
                 upload_file_to_azure_with_access_key_async(
-                    challenge_filename,
+                    &challenge_filename.to_string(),
                     &access_key,
                     &storage_account,
                     &container,
@@ -299,7 +299,7 @@ async fn run<E: PairingEngine>(opts: &NewCeremonyOpts, private_key: &[u8]) -> Re
                             new_challenge_hash: new_challenge_hash_from_file,
                             verification_duration: None,
                         })?,
-                        signature: "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                        signature: Default::default(),
                     }),
                     contributed_data: None,
                     verified_location: Some(location),
@@ -323,7 +323,7 @@ async fn run<E: PairingEngine>(opts: &NewCeremonyOpts, private_key: &[u8]) -> Re
     )?;
     info!("Updating ceremony");
     let client = reqwest::Client::new();
-    let authorization = get_authorization_value(&private_key, "PUT", "ceremony")?;
+    let authorization = get_authorization_value(&key_pair, "PUT", "ceremony")?;
     client
         .put(server_url.as_str())
         .header(AUTHORIZATION, authorization)
@@ -340,16 +340,26 @@ async fn run<E: PairingEngine>(opts: &NewCeremonyOpts, private_key: &[u8]) -> Re
 async fn main() {
     tracing_subscriber::fmt().json().init();
     let opts: NewCeremonyOpts = NewCeremonyOpts::parse_args_default_or_exit();
-    let (_, private_key, _) = read_keys(&opts.keys_file, opts.unsafe_passphrase, false)
-        .expect("Should have loaded Plumo setup keys");
+    let (_, key_pair, _) = read_keys(&opts.keys_file, opts.unsafe_passphrase, false)
+        .expect("Should have loaded Nimiq setup keys");
     match opts.curve.as_str() {
         "bw6" => {
-            run::<BW6_761>(&opts, private_key.expose_secret())
+            run::<BW6_761>(&opts, key_pair.expose_secret())
                 .await
                 .expect("Should have run the new ceremony generation");
         }
         "bls12_377" => {
-            run::<Bls12_377>(&opts, private_key.expose_secret())
+            run::<Bls12_377>(&opts, key_pair.expose_secret())
+                .await
+                .expect("Should have run the new ceremony generation");
+        }
+        "mnt4_753" => {
+            run::<MNT4_753>(&opts, key_pair.expose_secret())
+                .await
+                .expect("Should have run the new ceremony generation");
+        }
+        "mnt6_753" => {
+            run::<MNT6_753>(&opts, key_pair.expose_secret())
                 .await
                 .expect("Should have run the new ceremony generation");
         }

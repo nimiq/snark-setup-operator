@@ -23,7 +23,7 @@ set -e -v
   export PATH="\$HOME/.cargo/bin:\$PATH"
 
   rm -rf snark-setup-operator
-  git clone https://github.com/celo-org/snark-setup-operator
+  git clone https://github.com/nimiq/snark-setup-operator
   cd snark-setup-operator
   git checkout $COMMIT
   cargo build --release --bin generate
@@ -35,7 +35,7 @@ set -e -v
   chmod +x run_client.sh
   tmux new-session -d -s contributor ./run_client.sh
 } 2>/dev/null 1>/dev/null
-cat plumo.keys | jq '.address' -r
+cat nimiq.keys | jq '.address' -r
 set +e
 exit 0
 ENDSSH

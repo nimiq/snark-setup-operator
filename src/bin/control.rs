@@ -1,10 +1,11 @@
 use snark_setup_operator::{data_structs::Ceremony, error::ControlError};
 
-use algebra::{Bls12_377, PairingEngine, BW6_761};
 use anyhow::Result;
-use ethers::core::k256::ecdsa::SigningKey;
-use ethers::signers::LocalWallet;
+use ark_bls12_377::Bls12_377;
+use ark_bw6_761::BW6_761;
+use ark_ec::pairing::Pairing;
 use gumdrop::Options;
+use nimiq_keys::{KeyPair, PrivateKey};
 #[allow(unused_imports)]
 use phase1_cli::*;
 #[allow(unused_imports)]
@@ -16,7 +17,7 @@ use setup_utils::{
     DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS, DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
 };
 use snark_setup_operator::data_structs::{
-    Chunk, ChunkMetadata, Contribution, ContributionMetadata,
+    Chunk, ChunkMetadata, Contribution, ContributionMetadata, ParticipantId,
 };
 use snark_setup_operator::error::{NewRoundError, VerifyTranscriptError};
 use snark_setup_operator::utils::{
@@ -59,14 +60,14 @@ const NEW_CHALLENGE_LIST_FILENAME: &str = "new_challenge_list";
 pub struct AddParticipantOpts {
     help: bool,
     #[options(help = "participant ID", required)]
-    pub participant_id: String,
+    pub participant_id: ParticipantId,
 }
 
 #[derive(Debug, Options, Clone)]
 pub struct RemoveParticipantOpts {
     help: bool,
     #[options(help = "participant ID", required)]
-    pub participant_id: String,
+    pub participant_id: ParticipantId,
 }
 
 #[derive(Debug, Options, Clone)]
@@ -79,17 +80,19 @@ pub struct SignalShutdownOpts {
 #[derive(Debug, Options, Clone)]
 pub struct UnlockParticipantOpts {
     help: bool,
-    #[options(help = "participant ID", required)]
-    pub participant_id: String,
+    #[options(help = "participant ID")]
+    pub participant_id: Option<ParticipantId>,
+    #[options(help = "all participants")]
+    pub all: bool,
 }
 
 #[derive(Debug, Options, Clone)]
 pub struct NewRoundOpts {
     help: bool,
     #[options(help = "expected participants")]
-    pub expected_participant: Vec<String>,
+    pub expected_participant: Vec<ParticipantId>,
     #[options(help = "new participants")]
-    pub new_participant: Vec<String>,
+    pub new_participant: Vec<ParticipantId>,
     #[options(help = "verify transcript")]
     pub verify_transcript: bool,
     #[options(help = "send shutdown signal")]
@@ -106,14 +109,14 @@ pub struct ApplyBeaconOpts {
     #[options(help = "beacon value", required)]
     pub beacon_hash: String,
     #[options(help = "expected participants")]
-    pub expected_participant: Vec<String>,
+    pub expected_participant: Vec<ParticipantId>,
 }
 
 #[derive(Debug, Options, Clone)]
 pub struct RemoveLastContributionOpts {
     help: bool,
     #[options(help = "expected participant ID")]
-    pub participant_id: String,
+    pub participant_id: ParticipantId,
     #[options(help = "chunk index")]
     pub chunk_index: usize,
 }
@@ -131,8 +134,8 @@ pub struct ControlOpts {
     )]
     pub coordinator_url: String,
     #[options(
-        help = "the encrypted keys for the Plumo setup",
-        default = "plumo.keys"
+        help = "the encrypted keys for the Nimiq setup",
+        default = "nimiq.keys"
     )]
     pub keys_file: String,
     #[options(help = "read passphrase from stdin. THIS IS UNSAFE as it doesn't use pinentry!")]
@@ -223,7 +226,7 @@ pub enum Command {
 pub struct Control {
     pub phase: Phase,
     pub server_url: Url,
-    pub private_key: LocalWallet,
+    pub private_key: KeyPair,
     pub phase2_opts: Option<Phase2Opts>,
 }
 
@@ -249,7 +252,7 @@ impl Control {
             (_, _) => None,
         };
 
-        let private_key = LocalWallet::from(SigningKey::new(private_key)?);
+        let private_key = KeyPair::from(PrivateKey::from_bytes(private_key)?);
         let control = Self {
             phase: phase,
             server_url: server_url,
@@ -259,12 +262,9 @@ impl Control {
         Ok(control)
     }
 
-    async fn add_participant(&self, participant_id: String) -> Result<()> {
+    async fn add_participant(&self, participant_id: ParticipantId) -> Result<()> {
         let mut ceremony = self.get_ceremony().await?;
-        if ceremony
-            .contributor_ids
-            .contains(&participant_id.to_string())
-        {
+        if ceremony.contributor_ids.contains(&participant_id) {
             return Err(ControlError::ParticipantAlreadyExistsError(
                 participant_id.clone(),
                 ceremony.contributor_ids.clone(),
@@ -277,9 +277,9 @@ impl Control {
         Ok(())
     }
 
-    async fn add_verifier(&self, participant_id: String) -> Result<()> {
+    async fn add_verifier(&self, participant_id: ParticipantId) -> Result<()> {
         let mut ceremony = self.get_ceremony().await?;
-        if ceremony.verifier_ids.contains(&participant_id.to_string()) {
+        if ceremony.verifier_ids.contains(&participant_id) {
             return Err(ControlError::ParticipantAlreadyExistsError(
                 participant_id.clone(),
                 ceremony.verifier_ids.clone(),
@@ -318,13 +318,10 @@ impl Control {
         Ok(())
     }
 
-    async fn remove_participant(&self, participant_id: String) -> Result<()> {
+    async fn remove_participant(&self, participant_id: ParticipantId) -> Result<()> {
         let mut ceremony = self.get_ceremony().await?;
         self.backup_ceremony(&ceremony)?;
-        if !ceremony
-            .contributor_ids
-            .contains(&participant_id.to_string())
-        {
+        if !ceremony.contributor_ids.contains(&participant_id) {
             return Err(ControlError::ParticipantDoesNotExistError(
                 participant_id.clone(),
                 ceremony.contributor_ids.clone(),
@@ -334,7 +331,7 @@ impl Control {
         ceremony.contributor_ids.retain(|x| *x != participant_id);
         for (chunk_index, chunk) in ceremony.chunks.iter_mut().enumerate() {
             // If the participant is currently holding the lock, release it and continue.
-            if chunk.lock_holder == Some(participant_id.to_string()) {
+            if chunk.lock_holder == Some(participant_id) {
                 info!(
                     "chunk {} is locked by the participant, releasing it",
                     chunk_index
@@ -364,10 +361,10 @@ impl Control {
         Ok(())
     }
 
-    async fn remove_verifier(&self, participant_id: String) -> Result<()> {
+    async fn remove_verifier(&self, participant_id: ParticipantId) -> Result<()> {
         let mut ceremony = self.get_ceremony().await?;
         self.backup_ceremony(&ceremony)?;
-        if !ceremony.verifier_ids.contains(&participant_id.to_string()) {
+        if !ceremony.verifier_ids.contains(&participant_id) {
             return Err(ControlError::ParticipantDoesNotExistError(
                 participant_id.clone(),
                 ceremony.verifier_ids.clone(),
@@ -377,7 +374,7 @@ impl Control {
         ceremony.verifier_ids.retain(|x| *x != participant_id);
         for (chunk_index, chunk) in ceremony.chunks.iter_mut().enumerate() {
             // If the verifier is currently holding the lock, release it and continue.
-            if chunk.lock_holder == Some(participant_id.to_string()) {
+            if chunk.lock_holder == Some(participant_id) {
                 info!(
                     "chunk {} is locked by the participant, releasing it",
                     chunk_index
@@ -390,13 +387,14 @@ impl Control {
         Ok(())
     }
 
-    async fn unlock_participant(&self, participant_id: String) -> Result<()> {
+    /// If no participant ID is given, we unlock all.
+    async fn unlock_participant(&self, participant_id: Option<ParticipantId>) -> Result<()> {
         let mut ceremony = self.get_ceremony().await?;
         let chunk_ids = ceremony
             .chunks
             .iter_mut()
             .map(|c| {
-                if participant_id == "all" || c.lock_holder == Some(participant_id.clone()) {
+                if participant_id.is_none() || c.lock_holder == participant_id {
                     c.lock_holder = None;
                     Some(c.chunk_id.clone())
                 } else {
@@ -410,7 +408,7 @@ impl Control {
         Ok(())
     }
 
-    async fn combine_and_verify_round<E: PairingEngine>(&self, ceremony: &Ceremony) -> Result<()> {
+    async fn combine_and_verify_round<E: Pairing>(&self, ceremony: &Ceremony) -> Result<()> {
         let mut response_list_file = File::create(RESPONSE_LIST_FILENAME)?;
         info!("Verifying round {}", ceremony.round);
         for (chunk_index, contribution) in ceremony
@@ -506,10 +504,10 @@ impl Control {
         Ok(())
     }
 
-    async fn new_round<E: PairingEngine>(
+    async fn new_round<E: Pairing>(
         &self,
-        expected_participants: &[String],
-        new_participants: &[String],
+        expected_participants: &[ParticipantId],
+        new_participants: &[ParticipantId],
         verify_transcript: bool,
         send_shutdown_signal: bool,
         shutdown_delay_time_in_secs: u64,
@@ -585,7 +583,7 @@ impl Control {
             save_transcript(&transcript)?;
             if send_shutdown_signal {
                 // Sleep for some time to allow contributors to shut down.
-                tokio::time::delay_for(tokio::time::Duration::from_secs(
+                tokio::time::sleep(tokio::time::Duration::from_secs(
                     shutdown_delay_time_in_secs,
                 ))
                 .await;
@@ -597,10 +595,10 @@ impl Control {
         Ok(())
     }
 
-    async fn apply_beacon<E: PairingEngine>(
+    async fn apply_beacon<E: Pairing>(
         &self,
         beacon_hash: &str,
-        expected_participants: &[String],
+        expected_participants: &[ParticipantId],
     ) -> Result<()> {
         let mut transcript = load_transcript()?;
         backup_transcript(&transcript)?;
@@ -704,17 +702,14 @@ impl Control {
 
     async fn remove_last_contribution(
         &self,
-        expected_participant_id: &str,
+        expected_participant_id: &ParticipantId,
         chunk_index: usize,
     ) -> Result<()> {
         let mut ceremony = self.get_ceremony().await?;
         self.backup_ceremony(&ceremony)?;
-        if !ceremony
-            .contributor_ids
-            .contains(&expected_participant_id.to_string())
-        {
+        if !ceremony.contributor_ids.contains(&expected_participant_id) {
             return Err(ControlError::ParticipantDoesNotExistError(
-                expected_participant_id.to_string(),
+                expected_participant_id.clone(),
                 ceremony.contributor_ids.clone(),
             )
             .into());
@@ -729,7 +724,7 @@ impl Control {
         if participant_id_from_chunk != expected_participant_id {
             return Err(ControlError::ParticipantUnexpected(
                 chunk_index,
-                expected_participant_id.to_string(),
+                expected_participant_id.clone(),
                 participant_id_from_chunk.clone(),
             )
             .into());
@@ -756,7 +751,7 @@ async fn main() {
 
     let main_opts: ControlOpts = ControlOpts::parse_args_default_or_exit();
     let (_, private_key, _) = read_keys(&main_opts.keys_file, main_opts.unsafe_passphrase, false)
-        .expect("Should have loaded Plumo setup keys");
+        .expect("Should have loaded Nimiq setup keys");
 
     let control = Control::new(&main_opts, private_key.expose_secret())
         .await
@@ -788,10 +783,16 @@ async fn main() {
             .signal_shutdown(opts.shutdown_signal)
             .await
             .expect("Should have run command successfully"),
-        Command::UnlockParticipantChunks(opts) => control
-            .unlock_participant(opts.participant_id)
-            .await
-            .expect("Should have run command successfully"),
+        Command::UnlockParticipantChunks(opts) => {
+            // Make sure options are not in conflict.
+            if opts.all == opts.participant_id.is_none() {
+                panic!("Requires either a participant ID or the `all` option.");
+            }
+            control
+                .unlock_participant(opts.participant_id)
+                .await
+                .expect("Should have run command successfully")
+        }
         Command::NewRound(opts) => match main_opts.curve.as_str() {
             "bw6" => {
                 control

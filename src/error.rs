@@ -1,9 +1,11 @@
-use crate::data_structs::Parameters;
+use crate::data_structs::{Parameters, ParticipantId};
 use std::collections::HashSet;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum VerifyTranscriptError {
+    #[error("Signature does not verify")]
+    InvalidSignature,
     #[error("Contributor data was none")]
     ContributorDataIsNoneError,
     #[error("Verified data was none")]
@@ -29,7 +31,7 @@ pub enum VerifyTranscriptError {
     #[error("Unsupported proving system: {0}")]
     UnsupportedProvingSystemError(String),
     #[error("Not all participant IDs present, required: {0:?} got: {1:?}")]
-    NotAllParticipantsPresent(HashSet<String>, HashSet<String>),
+    NotAllParticipantsPresent(HashSet<ParticipantId>, HashSet<ParticipantId>),
     #[error("Not all chunks have the same number of contributions")]
     NotAllChunksHaveSameNumberOfContributionsError,
     #[error("Beacon hash had wrong length: {0}")]
@@ -55,11 +57,11 @@ pub enum MonitorError {
 #[derive(Debug, Error)]
 pub enum ControlError {
     #[error("Participant already exists: {0}, existing participants are {1:?}")]
-    ParticipantAlreadyExistsError(String, Vec<String>),
+    ParticipantAlreadyExistsError(ParticipantId, Vec<ParticipantId>),
     #[error("Participant does not exist: {0}, existing participants are {1:?}")]
-    ParticipantDoesNotExistError(String, Vec<String>),
+    ParticipantDoesNotExistError(ParticipantId, Vec<ParticipantId>),
     #[error("Participant unexpected on chunk {0}: expected {1}, got {2}")]
-    ParticipantUnexpected(usize, String, String),
+    ParticipantUnexpected(usize, ParticipantId, ParticipantId),
 }
 
 #[derive(Debug, Error)]
@@ -93,7 +95,7 @@ pub enum ContributeError {
     #[error("Could not find chunk with ID {0} in any lane")]
     CouldNotFindChunkWithIDInAnyLaneError(String),
     #[error("Could not find chunk with ID {0} in the ceremony locked by participant {1}")]
-    CouldNotFindChunkWithIDLockedByParticipantError(String, String),
+    CouldNotFindChunkWithIDLockedByParticipantError(String, ParticipantId),
     #[error("Got exit signal")]
     GotExitSignalError,
 }
@@ -137,7 +139,7 @@ pub enum NewRoundError {
     #[error("Versions were the same: {0}")]
     RoundSameError(u64),
     #[error("Expected participants were different: current {0:?}, expected {1:?}")]
-    DifferentExpectedParticipantsError(HashSet<String>, HashSet<String>),
+    DifferentExpectedParticipantsError(HashSet<ParticipantId>, HashSet<ParticipantId>),
     #[error("Transcript cannot be verified independently in phase 2")]
     NoVerificationPhase2,
 }

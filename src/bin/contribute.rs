@@ -1,27 +1,29 @@
+use ark_bls12_377::Bls12_377;
+use ark_mnt4_753::MNT4_753;
+use ark_mnt6_753::MNT6_753;
+use phase1::Phase1Parameters;
+use serde_json::Value;
 use snark_setup_operator::data_structs::{
     Attestation, ChunkDownloadInfo, ContributedData, ContributionUploadUrl, FilteredChunks,
-    SignedData, UnlockBody, VerifiedData,
+    ParticipantId, SignedData, UnlockBody, VerifiedData,
 };
 use snark_setup_operator::utils::{
-    address_to_string, collect_processor_data, create_parameters_for_chunk,
-    download_file_direct_async, download_file_from_azure_async, get_authorization_value,
-    get_content_length, participation_mode_from_str, read_hash_from_file, read_keys,
-    remove_file_if_exists, sign_json, upload_file_direct_async, upload_file_to_azure_async,
-    upload_mode_from_str, write_attestation_to_file, ParticipationMode, UploadMode,
+    collect_processor_data, create_parameters_for_chunk, download_file_direct_async,
+    download_file_from_azure_async, get_authorization_value, get_content_length,
+    participation_mode_from_str, read_hash_from_file, read_keys, remove_file_if_exists, sign_json,
+    upload_file_direct_async, upload_file_to_azure_async, upload_mode_from_str,
+    write_attestation_to_file, ParticipationMode, UploadMode,
 };
-use snark_setup_operator::{
-    data_structs::{Ceremony, Response},
-    error::ContributeError,
-};
+use snark_setup_operator::{data_structs::Response, error::ContributeError};
 
-use algebra::{PairingEngine, BW6_761};
 use anyhow::Result;
+use ark_bw6_761::BW6_761;
+use ark_ec::pairing::Pairing;
 use chrono::Duration;
-use ethers::core::k256::ecdsa::SigningKey;
-use ethers::signers::LocalWallet;
 use gumdrop::Options;
 use indicatif::{ProgressBar, ProgressStyle};
 use lazy_static::lazy_static;
+use nimiq_keys::{KeyPair, PrivateKey};
 use panic_control::{spawn_quiet, ThreadResultExt};
 #[allow(unused_imports)]
 use phase1_cli::*;
@@ -81,21 +83,21 @@ pub struct ContributeOpts {
     pub phase: Option<String>,
     #[options(
         help = "the url of the coordinator API",
-        default = "https://plumo-setup-phase-2.azurefd.net"
+        default = "https://nimiq-setup-phase-2.azurefd.net"
     )]
     pub coordinator_url: String,
     #[options(
-        help = "the encrypted keys for the Plumo setup",
-        default = "plumo.keys"
+        help = "the encrypted keys for the Nimiq setup",
+        default = "nimiq.keys"
     )]
     pub keys_file: String,
     #[options(
-        help = "the attestation for the Plumo setup",
-        default = "plumo.attestation.txt"
+        help = "the attestation for the Nimiq setup",
+        default = "nimiq.attestation.txt"
     )]
     pub attestation_path: String,
     #[options(
-        help = "the log path of the Plumo setup",
+        help = "the log path of the Nimiq setup",
         default = "./snark-setup.log"
     )]
     pub log_path: String,
@@ -170,8 +172,8 @@ impl std::fmt::Display for PipelineLane {
 pub struct Contribute {
     pub phase: Option<Phase>,
     pub server_url: Url,
-    pub participant_id: String,
-    pub private_key: LocalWallet,
+    pub participant_id: ParticipantId,
+    pub key_pair: KeyPair,
     pub upload_mode: UploadMode,
     pub participation_mode: ParticipationMode,
     pub max_in_download_lane: usize,
@@ -197,12 +199,8 @@ pub struct Contribute {
 }
 
 impl Contribute {
-    pub fn new(
-        opts: &ContributeOpts,
-        private_key: &[u8],
-        attestation: &Attestation,
-    ) -> Result<Self> {
-        let private_key = LocalWallet::from(SigningKey::new(private_key)?);
+    pub fn new(opts: &ContributeOpts, key_pair: &[u8], attestation: &Attestation) -> Result<Self> {
+        let key_pair = KeyPair::from(PrivateKey::from_bytes(key_pair)?);
         let phase = match &opts.phase {
             Some(phase) => Some(string_to_phase(phase)?),
             _ => None,
@@ -211,8 +209,8 @@ impl Contribute {
         let contribute_params = Self {
             phase,
             server_url: Url::parse(&opts.coordinator_url)?,
-            participant_id: address_to_string(&private_key.address()),
-            private_key,
+            participant_id: key_pair.public.clone(),
+            key_pair,
             upload_mode: opts.upload_mode,
             participation_mode: opts.participation_mode,
             max_in_download_lane: opts.max_in_download_lane,
@@ -264,7 +262,7 @@ impl Contribute {
                 SHOULD_UPDATE_STATUS.store(false, SeqCst);
                 return;
             }
-            tokio::time::delay_for(
+            tokio::time::sleep(
                 Duration::seconds(DELAY_POLL_CEREMONY_SECS)
                     .to_std()
                     .expect("Should have converted duration to standard"),
@@ -277,7 +275,7 @@ impl Contribute {
         SHOULD_UPDATE_STATUS.store(true, SeqCst);
     }
 
-    async fn run_and_catch_errors<E: PairingEngine>(&self) -> Result<()> {
+    async fn run_and_catch_errors(&self) -> Result<()> {
         let delay_after_error_duration =
             Duration::seconds(DELAY_AFTER_ERROR_DURATION_SECS).to_std()?;
         let delay_after_attestation_error_duration =
@@ -305,7 +303,7 @@ impl Contribute {
                 Err(e) => {
                     warn!("Got error from ceremony initialization: {}", e);
                     progress_bar.println(&format!("Got error from ceremony initialization: {}", e));
-                    tokio::time::delay_for(delay_after_error_duration).await;
+                    tokio::time::sleep(delay_after_error_duration).await;
                 }
             }
         }
@@ -319,7 +317,7 @@ impl Contribute {
                             "Could not upload attestation, error was {}, retrying...",
                             e
                         ));
-                        tokio::time::delay_for(delay_after_attestation_error_duration).await;
+                        tokio::time::sleep(delay_after_attestation_error_duration).await;
                     }
                 }
             }
@@ -387,7 +385,7 @@ impl Contribute {
                     }
                 };
                 SHOULD_UPDATE_STATUS.store(true, SeqCst);
-                tokio::time::delay_for(
+                tokio::time::sleep(
                     Duration::seconds(DELAY_STATUS_UPDATE_FORCE_SECS)
                         .to_std()
                         .expect("Should have converted duration to standard"),
@@ -401,7 +399,7 @@ impl Contribute {
             let progress_bar_for_thread = progress_bar.clone();
             let jh = tokio::spawn(async move {
                 loop {
-                    let result = cloned.run::<E>().await;
+                    let result = cloned.run().await;
                     if EXITING.load(SeqCst) {
                         return;
                     }
@@ -446,7 +444,7 @@ impl Contribute {
                             }
                         }
                     }
-                    tokio::time::delay_for(delay_duration).await;
+                    tokio::time::sleep(delay_duration).await;
                 }
             });
             futures.push(jh);
@@ -480,7 +478,7 @@ impl Contribute {
                     return Ok(());
                 }
             }
-            tokio::time::delay_for(Duration::seconds(DELAY_WAIT_FOR_PIPELINE_SECS).to_std()?).await;
+            tokio::time::sleep(Duration::seconds(DELAY_WAIT_FOR_PIPELINE_SECS).to_std()?).await;
         }
     }
 
@@ -713,16 +711,308 @@ impl Contribute {
                     return Ok(());
                 }
                 false => {
-                    tokio::time::delay_for(
-                        Duration::seconds(DELAY_WAIT_FOR_PIPELINE_SECS).to_std()?,
-                    )
-                    .await;
+                    tokio::time::sleep(Duration::seconds(DELAY_WAIT_FOR_PIPELINE_SECS).to_std()?)
+                        .await;
                 }
             }
         }
     }
 
-    async fn run<E: PairingEngine>(&mut self) -> Result<()> {
+    async fn contribute<P: Pairing>(
+        &self,
+        chunk: &ChunkDownloadInfo,
+        chunk_id: &str,
+        phase: Phase,
+        parameters: Phase1Parameters<P>,
+    ) -> Result<(&String, Value)> {
+        let download_url = self.get_download_url_of_last_challenge(&chunk)?;
+        match self.upload_mode {
+            UploadMode::Auto => {
+                if download_url.contains("blob.core.windows.net") {
+                    download_file_from_azure_async(
+                        &download_url,
+                        get_content_length(&download_url).await?,
+                        &self.challenge_filename,
+                    )
+                    .await?;
+                } else {
+                    download_file_direct_async(&download_url, &self.challenge_filename).await?;
+                }
+            }
+            UploadMode::Azure => {
+                download_file_from_azure_async(
+                    &download_url,
+                    get_content_length(&download_url).await?,
+                    &self.challenge_filename,
+                )
+                .await?;
+            }
+            UploadMode::Direct => {
+                download_file_direct_async(&download_url, &self.challenge_filename).await?;
+            }
+        }
+        self.wait_and_move_chunk_id_from_lane_to_lane(
+            &PipelineLane::Download,
+            &PipelineLane::Process,
+            &chunk_id,
+        )
+        .await?;
+        let seed = SEED.read().expect("Should have been able to read seed");
+        let exposed_seed = seed
+            .as_ref()
+            .ok_or(ContributeError::SeedWasNoneError)
+            .expect("Seed should not have been none")
+            .expose_secret();
+        let rng = derive_rng_from_seed(&exposed_seed[..]);
+        let start = Instant::now();
+        remove_file_if_exists(&self.response_filename)?;
+        remove_file_if_exists(&self.response_hash_filename)?;
+        let (
+            challenge_filename,
+            challenge_hash_filename,
+            response_filename,
+            response_hash_filename,
+            force_correctness_checks,
+            batch_exp_mode,
+        ) = (
+            self.challenge_filename.clone(),
+            self.challenge_hash_filename.clone(),
+            self.response_filename.clone(),
+            self.response_hash_filename.clone(),
+            self.force_correctness_checks.clone(),
+            self.batch_exp_mode.clone(),
+        );
+
+        let h = if phase == Phase::Phase1 {
+            spawn_quiet(move || {
+                phase1_cli::contribute(
+                    &challenge_filename,
+                    &challenge_hash_filename,
+                    &response_filename,
+                    &response_hash_filename,
+                    upgrade_correctness_check_config(
+                        DEFAULT_CONTRIBUTE_CHECK_INPUT_CORRECTNESS,
+                        force_correctness_checks,
+                    ),
+                    batch_exp_mode,
+                    &parameters,
+                    rng,
+                );
+            })
+        } else {
+            spawn_quiet(move || {
+                phase2_cli::contribute(
+                    &challenge_filename,
+                    &challenge_hash_filename,
+                    &response_filename,
+                    &response_hash_filename,
+                    upgrade_correctness_check_config(
+                        DEFAULT_CONTRIBUTE_CHECK_INPUT_CORRECTNESS,
+                        force_correctness_checks,
+                    ),
+                    batch_exp_mode,
+                    rng,
+                );
+            })
+        };
+
+        let result = h.join();
+        if !result.is_ok() {
+            if let Some(panic_value) = result.panic_value_as_str() {
+                error!("Contribute failed: {}", panic_value);
+                return Err(
+                    ContributeError::FailedRunningContributeError(panic_value.to_string()).into(),
+                );
+            } else {
+                error!("Contribute failed: no panic value");
+                return Err(ContributeError::FailedRunningContributeError(
+                    "no panic value".to_string(),
+                )
+                .into());
+            }
+        }
+        let duration = start.elapsed();
+        let processor_data = if !self.disable_sysinfo && !SENT_SYSINFO.load(SeqCst) {
+            let data = collect_processor_data()?;
+            SENT_SYSINFO.store(true, SeqCst);
+            Some(data)
+        } else {
+            None
+        };
+        let contributed_data = ContributedData {
+            challenge_hash: read_hash_from_file(&self.challenge_hash_filename)?,
+            response_hash: read_hash_from_file(&self.response_hash_filename)?,
+            contribution_duration: Some(duration.as_millis() as u64),
+            processor_data,
+        };
+
+        Ok((
+            &self.response_filename,
+            serde_json::to_value(contributed_data)?,
+        ))
+    }
+
+    async fn verify<P: Pairing>(
+        &self,
+        chunk: &ChunkDownloadInfo,
+        chunk_id: &str,
+        phase: Phase,
+        parameters: Phase1Parameters<P>,
+    ) -> Result<(&String, Value)> {
+        let challenge_download_url =
+            self.get_download_url_of_last_challenge_for_verifying(&chunk)?;
+        let response_download_url = self.get_download_url_of_last_response(&chunk)?;
+        match self.upload_mode {
+            UploadMode::Auto => {
+                if challenge_download_url.contains("blob.core.windows.net") {
+                    download_file_from_azure_async(
+                        &challenge_download_url,
+                        get_content_length(&challenge_download_url).await?,
+                        &self.challenge_filename,
+                    )
+                    .await?;
+                } else {
+                    download_file_direct_async(&challenge_download_url, &self.challenge_filename)
+                        .await?;
+                }
+                if response_download_url.contains("blob.core.windows.net") {
+                    download_file_from_azure_async(
+                        &response_download_url,
+                        get_content_length(&response_download_url).await?,
+                        &self.response_filename,
+                    )
+                    .await?;
+                } else {
+                    download_file_direct_async(&response_download_url, &self.response_filename)
+                        .await?;
+                }
+            }
+            UploadMode::Azure => {
+                download_file_from_azure_async(
+                    &challenge_download_url,
+                    get_content_length(&challenge_download_url).await?,
+                    &self.challenge_filename,
+                )
+                .await?;
+                download_file_from_azure_async(
+                    &response_download_url,
+                    get_content_length(&response_download_url).await?,
+                    &self.response_filename,
+                )
+                .await?;
+            }
+            UploadMode::Direct => {
+                download_file_direct_async(&challenge_download_url, &self.challenge_filename)
+                    .await?;
+                download_file_direct_async(&response_download_url, &self.response_filename).await?;
+            }
+        }
+        self.wait_and_move_chunk_id_from_lane_to_lane(
+            &PipelineLane::Download,
+            &PipelineLane::Process,
+            &chunk_id,
+        )
+        .await?;
+        let start = Instant::now();
+        remove_file_if_exists(&self.new_challenge_filename)?;
+        remove_file_if_exists(&self.new_challenge_hash_filename)?;
+
+        let (
+            challenge_filename,
+            challenge_hash_filename,
+            response_filename,
+            response_hash_filename,
+            new_challenge_filename,
+            new_challenge_hash_filename,
+            force_correctness_checks,
+            subgroup_check_mode,
+            ratio_check,
+        ) = (
+            self.challenge_filename.clone(),
+            self.challenge_hash_filename.clone(),
+            self.response_filename.clone(),
+            self.response_hash_filename.clone(),
+            self.new_challenge_filename.clone(),
+            self.new_challenge_hash_filename.clone(),
+            self.force_correctness_checks.clone(),
+            self.subgroup_check_mode.clone(),
+            self.ratio_check.clone(),
+        );
+        let h = if phase == Phase::Phase1 {
+            spawn_quiet(move || {
+                phase1_cli::transform_pok_and_correctness(
+                    &challenge_filename,
+                    &challenge_hash_filename,
+                    upgrade_correctness_check_config(
+                        DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                        force_correctness_checks,
+                    ),
+                    &response_filename,
+                    &response_hash_filename,
+                    upgrade_correctness_check_config(
+                        DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
+                        force_correctness_checks,
+                    ),
+                    &new_challenge_filename,
+                    &new_challenge_hash_filename,
+                    subgroup_check_mode,
+                    ratio_check,
+                    &parameters,
+                );
+            })
+        } else {
+            spawn_quiet(move || {
+                phase2_cli::verify(
+                    &challenge_filename,
+                    &challenge_hash_filename,
+                    upgrade_correctness_check_config(
+                        DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                        force_correctness_checks,
+                    ),
+                    &response_filename,
+                    &response_hash_filename,
+                    upgrade_correctness_check_config(
+                        DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
+                        force_correctness_checks,
+                    ),
+                    &new_challenge_filename,
+                    &new_challenge_hash_filename,
+                    subgroup_check_mode,
+                    false,
+                );
+            })
+        };
+        let result = h.join();
+        if !result.is_ok() {
+            if let Some(panic_value) = result.panic_value_as_str() {
+                error!("Verification failed: {}", panic_value);
+                return Err(ContributeError::FailedRunningVerificationError(
+                    panic_value.to_string(),
+                )
+                .into());
+            } else {
+                error!("Verification failed: no panic value");
+                return Err(ContributeError::FailedRunningVerificationError(
+                    "no panic value".to_string(),
+                )
+                .into());
+            }
+        }
+        let duration = start.elapsed();
+        let verified_data = VerifiedData {
+            challenge_hash: read_hash_from_file(&self.challenge_hash_filename)?,
+            response_hash: read_hash_from_file(&self.response_hash_filename)?,
+            new_challenge_hash: read_hash_from_file(&self.new_challenge_hash_filename)?,
+            verification_duration: Some(duration.as_millis() as u64),
+        };
+
+        Ok((
+            &self.new_challenge_filename,
+            serde_json::to_value(verified_data)?,
+        ))
+    }
+
+    async fn run(&mut self) -> Result<()> {
         loop {
             self.wait_for_available_spot_in_lane(&PipelineLane::Download)
                 .await?;
@@ -745,10 +1035,8 @@ impl Contribute {
                     remove_file_if_exists(&self.new_challenge_hash_filename)?;
                     return Ok(());
                 } else {
-                    tokio::time::delay_for(
-                        Duration::seconds(DELAY_WAIT_FOR_PIPELINE_SECS).to_std()?,
-                    )
-                    .await;
+                    tokio::time::sleep(Duration::seconds(DELAY_WAIT_FOR_PIPELINE_SECS).to_std()?)
+                        .await;
                     continue;
                 }
             }
@@ -766,308 +1054,82 @@ impl Contribute {
                 ParticipationMode::Contribute => {
                     remove_file_if_exists(&self.challenge_filename)?;
                     remove_file_if_exists(&self.challenge_hash_filename)?;
-                    let parameters =
-                        create_parameters_for_chunk::<E>(&chunk_info.parameters, chunk_index)?;
-                    let download_url = self.get_download_url_of_last_challenge(&chunk)?;
-                    match self.upload_mode {
-                        UploadMode::Auto => {
-                            if download_url.contains("blob.core.windows.net") {
-                                download_file_from_azure_async(
-                                    &download_url,
-                                    get_content_length(&download_url).await?,
-                                    &self.challenge_filename,
-                                )
-                                .await?;
-                            } else {
-                                download_file_direct_async(&download_url, &self.challenge_filename)
-                                    .await?;
-                            }
+                    match chunk_info.parameters.curve_kind.as_str() {
+                        "bw6" => {
+                            let parameters = create_parameters_for_chunk::<BW6_761>(
+                                &chunk_info.parameters,
+                                chunk_index,
+                            )?;
+                            self.contribute(&chunk, &chunk_id, phase, parameters)
+                                .await?
                         }
-                        UploadMode::Azure => {
-                            download_file_from_azure_async(
-                                &download_url,
-                                get_content_length(&download_url).await?,
-                                &self.challenge_filename,
-                            )
-                            .await?;
+                        "bls12_377" => {
+                            let parameters = create_parameters_for_chunk::<Bls12_377>(
+                                &chunk_info.parameters,
+                                chunk_index,
+                            )?;
+                            self.contribute(&chunk, &chunk_id, phase, parameters)
+                                .await?
                         }
-                        UploadMode::Direct => {
-                            download_file_direct_async(&download_url, &self.challenge_filename)
-                                .await?;
+                        "mnt4_753" => {
+                            let parameters = create_parameters_for_chunk::<MNT4_753>(
+                                &chunk_info.parameters,
+                                chunk_index,
+                            )?;
+                            self.contribute(&chunk, &chunk_id, phase, parameters)
+                                .await?
                         }
-                    }
-                    self.wait_and_move_chunk_id_from_lane_to_lane(
-                        &PipelineLane::Download,
-                        &PipelineLane::Process,
-                        &chunk_id,
-                    )
-                    .await?;
-                    let seed = SEED.read().expect("Should have been able to read seed");
-                    let exposed_seed = seed
-                        .as_ref()
-                        .ok_or(ContributeError::SeedWasNoneError)
-                        .expect("Seed should not have been none")
-                        .expose_secret();
-                    let rng = derive_rng_from_seed(&exposed_seed[..]);
-                    let start = Instant::now();
-                    remove_file_if_exists(&self.response_filename)?;
-                    remove_file_if_exists(&self.response_hash_filename)?;
-                    let (
-                        challenge_filename,
-                        challenge_hash_filename,
-                        response_filename,
-                        response_hash_filename,
-                        force_correctness_checks,
-                        batch_exp_mode,
-                    ) = (
-                        self.challenge_filename.clone(),
-                        self.challenge_hash_filename.clone(),
-                        self.response_filename.clone(),
-                        self.response_hash_filename.clone(),
-                        self.force_correctness_checks.clone(),
-                        self.batch_exp_mode.clone(),
-                    );
-
-                    let h = if phase == Phase::Phase1 {
-                        spawn_quiet(move || {
-                            phase1_cli::contribute(
-                                &challenge_filename,
-                                &challenge_hash_filename,
-                                &response_filename,
-                                &response_hash_filename,
-                                upgrade_correctness_check_config(
-                                    DEFAULT_CONTRIBUTE_CHECK_INPUT_CORRECTNESS,
-                                    force_correctness_checks,
-                                ),
-                                batch_exp_mode,
-                                &parameters,
-                                rng,
-                            );
-                        })
-                    } else {
-                        spawn_quiet(move || {
-                            phase2_cli::contribute(
-                                &challenge_filename,
-                                &challenge_hash_filename,
-                                &response_filename,
-                                &response_hash_filename,
-                                upgrade_correctness_check_config(
-                                    DEFAULT_CONTRIBUTE_CHECK_INPUT_CORRECTNESS,
-                                    force_correctness_checks,
-                                ),
-                                batch_exp_mode,
-                                rng,
-                            );
-                        })
-                    };
-
-                    let result = h.join();
-                    if !result.is_ok() {
-                        if let Some(panic_value) = result.panic_value_as_str() {
-                            error!("Contribute failed: {}", panic_value);
-                            return Err(ContributeError::FailedRunningContributeError(
-                                panic_value.to_string(),
-                            )
-                            .into());
-                        } else {
-                            error!("Contribute failed: no panic value");
-                            return Err(ContributeError::FailedRunningContributeError(
-                                "no panic value".to_string(),
-                            )
-                            .into());
+                        "mnt6_753" => {
+                            let parameters = create_parameters_for_chunk::<MNT6_753>(
+                                &chunk_info.parameters,
+                                chunk_index,
+                            )?;
+                            self.contribute(&chunk, &chunk_id, phase, parameters)
+                                .await?
+                        }
+                        c => {
+                            panic!("Unsupported curve: {}", c);
                         }
                     }
-                    let duration = start.elapsed();
-                    let processor_data = if !self.disable_sysinfo && !SENT_SYSINFO.load(SeqCst) {
-                        let data = collect_processor_data()?;
-                        SENT_SYSINFO.store(true, SeqCst);
-                        Some(data)
-                    } else {
-                        None
-                    };
-                    let contributed_data = ContributedData {
-                        challenge_hash: read_hash_from_file(&self.challenge_hash_filename)?,
-                        response_hash: read_hash_from_file(&self.response_hash_filename)?,
-                        contribution_duration: Some(duration.as_millis() as u64),
-                        processor_data,
-                    };
-
-                    (
-                        &self.response_filename,
-                        serde_json::to_value(contributed_data)?,
-                    )
                 }
                 ParticipationMode::Verify => {
                     remove_file_if_exists(&self.challenge_filename)?;
                     remove_file_if_exists(&self.challenge_hash_filename)?;
                     remove_file_if_exists(&self.response_filename)?;
                     remove_file_if_exists(&self.response_hash_filename)?;
-                    let parameters =
-                        create_parameters_for_chunk::<E>(&chunk_info.parameters, chunk_index)?;
-                    let challenge_download_url =
-                        self.get_download_url_of_last_challenge_for_verifying(&chunk)?;
-                    let response_download_url = self.get_download_url_of_last_response(&chunk)?;
-                    match self.upload_mode {
-                        UploadMode::Auto => {
-                            if challenge_download_url.contains("blob.core.windows.net") {
-                                download_file_from_azure_async(
-                                    &challenge_download_url,
-                                    get_content_length(&challenge_download_url).await?,
-                                    &self.challenge_filename,
-                                )
-                                .await?;
-                            } else {
-                                download_file_direct_async(
-                                    &challenge_download_url,
-                                    &self.challenge_filename,
-                                )
-                                .await?;
-                            }
-                            if response_download_url.contains("blob.core.windows.net") {
-                                download_file_from_azure_async(
-                                    &response_download_url,
-                                    get_content_length(&response_download_url).await?,
-                                    &self.response_filename,
-                                )
-                                .await?;
-                            } else {
-                                download_file_direct_async(
-                                    &response_download_url,
-                                    &self.response_filename,
-                                )
-                                .await?;
-                            }
+                    match chunk_info.parameters.curve_kind.as_str() {
+                        "bw6" => {
+                            let parameters = create_parameters_for_chunk::<BW6_761>(
+                                &chunk_info.parameters,
+                                chunk_index,
+                            )?;
+                            self.verify(&chunk, &chunk_id, phase, parameters).await?
                         }
-                        UploadMode::Azure => {
-                            download_file_from_azure_async(
-                                &challenge_download_url,
-                                get_content_length(&challenge_download_url).await?,
-                                &self.challenge_filename,
-                            )
-                            .await?;
-                            download_file_from_azure_async(
-                                &response_download_url,
-                                get_content_length(&response_download_url).await?,
-                                &self.response_filename,
-                            )
-                            .await?;
+                        "bls12_377" => {
+                            let parameters = create_parameters_for_chunk::<Bls12_377>(
+                                &chunk_info.parameters,
+                                chunk_index,
+                            )?;
+                            self.verify(&chunk, &chunk_id, phase, parameters).await?
                         }
-                        UploadMode::Direct => {
-                            download_file_direct_async(
-                                &challenge_download_url,
-                                &self.challenge_filename,
-                            )
-                            .await?;
-                            download_file_direct_async(
-                                &response_download_url,
-                                &self.response_filename,
-                            )
-                            .await?;
+                        "mnt4_753" => {
+                            let parameters = create_parameters_for_chunk::<MNT4_753>(
+                                &chunk_info.parameters,
+                                chunk_index,
+                            )?;
+                            self.verify(&chunk, &chunk_id, phase, parameters).await?
+                        }
+                        "mnt6_753" => {
+                            let parameters = create_parameters_for_chunk::<MNT6_753>(
+                                &chunk_info.parameters,
+                                chunk_index,
+                            )?;
+                            self.verify(&chunk, &chunk_id, phase, parameters).await?
+                        }
+                        c => {
+                            panic!("Unsupported curve: {}", c);
                         }
                     }
-                    self.wait_and_move_chunk_id_from_lane_to_lane(
-                        &PipelineLane::Download,
-                        &PipelineLane::Process,
-                        &chunk_id,
-                    )
-                    .await?;
-                    let start = Instant::now();
-                    remove_file_if_exists(&self.new_challenge_filename)?;
-                    remove_file_if_exists(&self.new_challenge_hash_filename)?;
-
-                    let (
-                        challenge_filename,
-                        challenge_hash_filename,
-                        response_filename,
-                        response_hash_filename,
-                        new_challenge_filename,
-                        new_challenge_hash_filename,
-                        force_correctness_checks,
-                        subgroup_check_mode,
-                        ratio_check,
-                    ) = (
-                        self.challenge_filename.clone(),
-                        self.challenge_hash_filename.clone(),
-                        self.response_filename.clone(),
-                        self.response_hash_filename.clone(),
-                        self.new_challenge_filename.clone(),
-                        self.new_challenge_hash_filename.clone(),
-                        self.force_correctness_checks.clone(),
-                        self.subgroup_check_mode.clone(),
-                        self.ratio_check.clone(),
-                    );
-                    let h = if phase == Phase::Phase1 {
-                        spawn_quiet(move || {
-                            phase1_cli::transform_pok_and_correctness(
-                                &challenge_filename,
-                                &challenge_hash_filename,
-                                upgrade_correctness_check_config(
-                                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                                    force_correctness_checks,
-                                ),
-                                &response_filename,
-                                &response_hash_filename,
-                                upgrade_correctness_check_config(
-                                    DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
-                                    force_correctness_checks,
-                                ),
-                                &new_challenge_filename,
-                                &new_challenge_hash_filename,
-                                subgroup_check_mode,
-                                ratio_check,
-                                &parameters,
-                            );
-                        })
-                    } else {
-                        spawn_quiet(move || {
-                            phase2_cli::verify(
-                                &challenge_filename,
-                                &challenge_hash_filename,
-                                upgrade_correctness_check_config(
-                                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                                    force_correctness_checks,
-                                ),
-                                &response_filename,
-                                &response_hash_filename,
-                                upgrade_correctness_check_config(
-                                    DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
-                                    force_correctness_checks,
-                                ),
-                                &new_challenge_filename,
-                                &new_challenge_hash_filename,
-                                subgroup_check_mode,
-                                false,
-                            );
-                        })
-                    };
-                    let result = h.join();
-                    if !result.is_ok() {
-                        if let Some(panic_value) = result.panic_value_as_str() {
-                            error!("Verification failed: {}", panic_value);
-                            return Err(ContributeError::FailedRunningVerificationError(
-                                panic_value.to_string(),
-                            )
-                            .into());
-                        } else {
-                            error!("Verification failed: no panic value");
-                            return Err(ContributeError::FailedRunningVerificationError(
-                                "no panic value".to_string(),
-                            )
-                            .into());
-                        }
-                    }
-                    let duration = start.elapsed();
-                    let verified_data = VerifiedData {
-                        challenge_hash: read_hash_from_file(&self.challenge_hash_filename)?,
-                        response_hash: read_hash_from_file(&self.response_hash_filename)?,
-                        new_challenge_hash: read_hash_from_file(&self.new_challenge_hash_filename)?,
-                        verification_duration: Some(duration.as_millis() as u64),
-                    };
-
-                    (
-                        &self.new_challenge_filename,
-                        serde_json::to_value(verified_data)?,
-                    )
                 }
             };
 
@@ -1079,7 +1141,7 @@ impl Contribute {
             .await?;
             let upload_url = self.get_upload_url(&chunk_id).await?;
             let authorization = get_authorization_value(
-                &self.private_key,
+                &self.key_pair,
                 "POST",
                 &Url::parse(&upload_url)?.path().trim_start_matches("/"),
             )?;
@@ -1101,7 +1163,7 @@ impl Contribute {
                 }
             }
             let signed_data = SignedData {
-                signature: sign_json(&self.private_key, &contributed_or_verified_data)?,
+                signature: sign_json(&self.key_pair, &contributed_or_verified_data)?,
                 data: contributed_or_verified_data,
             };
 
@@ -1209,22 +1271,6 @@ impl Contribute {
         Ok((chunk_id.parse::<usize>()?, chunk))
     }
 
-    #[allow(unused)]
-    #[deprecated]
-    async fn get_ceremony(&self) -> Result<Ceremony> {
-        let ceremony_url = self.server_url.join("ceremony")?;
-        let client = reqwest::Client::builder().gzip(true).build()?;
-        let response = client
-            .get(ceremony_url.as_str())
-            .header(CONTENT_LENGTH, 0)
-            .send()
-            .await?
-            .error_for_status()?;
-        let data = response.text().await?;
-        let ceremony: Ceremony = serde_json::from_str::<Response<Ceremony>>(&data)?.result;
-        Ok(ceremony)
-    }
-
     async fn get_chunk_info(&self) -> Result<FilteredChunks> {
         let get_path = match self.participation_mode {
             ParticipationMode::Contribute => format!("contributor/{}/chunks", self.participant_id),
@@ -1248,7 +1294,7 @@ impl Contribute {
         let lock_path = format!("chunks/{}/lock", chunk_id);
         let lock_chunk_url = self.server_url.join(&lock_path)?;
         let client = reqwest::Client::new();
-        let authorization = get_authorization_value(&self.private_key, "POST", &lock_path)?;
+        let authorization = get_authorization_value(&self.key_pair, "POST", &lock_path)?;
         client
             .post(lock_chunk_url.as_str())
             .header(AUTHORIZATION, authorization)
@@ -1263,7 +1309,7 @@ impl Contribute {
         let unlock_path = format!("chunks/{}/unlock", chunk_id);
         let unlock_chunk_url = self.server_url.join(&unlock_path)?;
         let client = reqwest::Client::new();
-        let authorization = get_authorization_value(&self.private_key, "POST", &unlock_path)?;
+        let authorization = get_authorization_value(&self.key_pair, "POST", &unlock_path)?;
         client
             .post(unlock_chunk_url.as_str())
             .header(AUTHORIZATION, authorization)
@@ -1278,8 +1324,7 @@ impl Contribute {
         let upload_request_path = format!("chunks/{}/contribution", chunk_id);
         let upload_request_url = self.server_url.join(&upload_request_path)?;
         let client = reqwest::Client::new();
-        let authorization =
-            get_authorization_value(&self.private_key, "GET", &upload_request_path)?;
+        let authorization = get_authorization_value(&self.key_pair, "GET", &upload_request_path)?;
         let response: Response<ContributionUploadUrl> = client
             .get(upload_request_url.as_str())
             .header(AUTHORIZATION, authorization)
@@ -1296,7 +1341,7 @@ impl Contribute {
         let notify_path = format!("chunks/{}/contribution", chunk_id);
         let notify_url = self.server_url.join(&notify_path)?;
         let client = reqwest::Client::new();
-        let authorization = get_authorization_value(&self.private_key, "POST", &notify_path)?;
+        let authorization = get_authorization_value(&self.key_pair, "POST", &notify_path)?;
         client
             .post(notify_url.as_str())
             .header(AUTHORIZATION, authorization)
@@ -1310,13 +1355,13 @@ impl Contribute {
     async fn add_attestation(&self, attestation: &Attestation) -> Result<()> {
         let data = serde_json::to_value(&attestation)?;
         let signed_data = SignedData {
-            signature: sign_json(&self.private_key, &data)?,
+            signature: sign_json(&self.key_pair, &data)?,
             data: data,
         };
         let notify_path = format!("attest");
         let notify_url = self.server_url.join(&notify_path)?;
         let client = reqwest::Client::new();
-        let authorization = get_authorization_value(&self.private_key, "POST", &notify_path)?;
+        let authorization = get_authorization_value(&self.key_pair, "POST", &notify_path)?;
         client
             .post(notify_url.as_str())
             .header(AUTHORIZATION, authorization)
@@ -1342,24 +1387,22 @@ fn main() {
 
     let opts: ContributeOpts = ContributeOpts::parse_args_default_or_exit();
     if !opts.disable_keep_awake {
-        let _ = keep_awake::inhibit("Plumo setup contribute", "This will take a while");
+        let _ = keep_awake::inhibit("Nimiq setup contribute", "This will take a while");
     }
-    let mut rt = if opts.free_threads > 0 {
+    let rt = if opts.free_threads > 0 {
         let max_threads = num_cpus::get();
         let threads = max_threads - opts.free_threads;
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build_global()
             .unwrap();
-        tokio::runtime::Builder::new()
-            .threaded_scheduler()
+        tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .core_threads(threads)
+            .worker_threads(threads)
             .build()
             .unwrap()
     } else {
-        tokio::runtime::Builder::new()
-            .threaded_scheduler()
+        tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap()
@@ -1377,18 +1420,18 @@ fn main() {
             .with_writer(non_blocking)
             .init();
 
-        let (seed, private_key, attestation) =
+        let (seed, key_pair, attestation) =
             read_keys(&opts.keys_file, opts.unsafe_passphrase, true)
-                .expect("Should have loaded Plumo setup keys");
+                .expect("Should have loaded Nimiq setup keys");
 
         *SEED.write().expect("Should have been able to write seed") = Some(seed);
 
         write_attestation_to_file(&attestation, &opts.attestation_path)
             .expect("Should have written attestation to file");
-        let contribute_struct = Contribute::new(&opts, private_key.expose_secret(), &attestation)
+        let contribute_struct = Contribute::new(&opts, key_pair.expose_secret(), &attestation)
             .expect("Should have been able to create a contribute.");
 
-        match contribute_struct.run_and_catch_errors::<BW6_761>().await {
+        match contribute_struct.run_and_catch_errors().await {
             Err(e) => panic!("Got error from contribute: {}", e.to_string()),
             _ => {}
         }

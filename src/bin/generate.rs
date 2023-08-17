@@ -1,22 +1,23 @@
 use age::cli_common::read_secret;
 use age::cli_common::Passphrase;
 use blake2::{Blake2s, Digest};
-use ethers::signers::{LocalWallet, Signer};
 use futures::executor::block_on;
 use gumdrop::Options;
-use rand::rngs::OsRng;
+use nimiq_keys::KeyPair;
+use nimiq_keys::SecureGenerate;
+
 use rand::RngCore;
+use rand::{self, thread_rng};
+
 use secrecy::{ExposeSecret, SecretString, SecretVec};
-use snark_setup_operator::data_structs::{Attestation, PlumoSetupKeys};
-use snark_setup_operator::utils::{
-    address_to_string, encrypt, trim_newline, PLUMO_SETUP_PERSONALIZATION,
-};
+use snark_setup_operator::data_structs::{Attestation, NimiqSetupKeys};
+use snark_setup_operator::utils::{encrypt, trim_newline, NIMIQ_SETUP_PERSONALIZATION};
 use std::io::{self, Write};
 
 #[derive(Debug, Options, Clone)]
 pub struct GenerateOpts {
     help: bool,
-    #[options(help = "the path of the output keys file", default = "plumo.keys")]
+    #[options(help = "the path of the output keys file", default = "nimiq.keys")]
     pub keys_file: String,
     #[options(help = "read passphrase from stdin. THIS IS UNSAFE as it doesn't use pinentry!")]
     pub unsafe_passphrase: bool,
@@ -25,7 +26,7 @@ pub struct GenerateOpts {
 fn main() {
     let opts: GenerateOpts = GenerateOpts::parse_args_default_or_exit();
     let mut file = std::fs::File::create(&opts.keys_file).expect("Should have created keys file");
-    let (entropy, attestation_message, plumo_encryptor, private_key_encryptor) = if !opts
+    let (entropy, attestation_message, nimiq_encryptor, private_key_encryptor) = if !opts
         .unsafe_passphrase
     {
         let mut attestation_message = String::new();
@@ -44,10 +45,10 @@ fn main() {
             }
         }
 
-        let entropy = read_secret("Enter some entropy for your Plumo seed", "Entropy", None)
+        let entropy = read_secret("Enter some entropy for your Nimiq seed", "Entropy", None)
             .expect("Should have read entropy");
 
-        let (plumo_encryptor, private_key_encryptor) =
+        let (nimiq_encryptor, private_key_encryptor) =
             match age::cli_common::read_or_generate_passphrase() {
                 Ok(Passphrase::Typed(passphrase)) => (
                     age::Encryptor::with_user_passphrase(passphrase.clone()),
@@ -68,7 +69,7 @@ fn main() {
         (
             entropy,
             attestation_message,
-            plumo_encryptor,
+            nimiq_encryptor,
             private_key_encryptor,
         )
     } else {
@@ -83,44 +84,43 @@ fn main() {
         )
     };
 
-    let mut rng = OsRng;
-    let mut plumo_seed = vec![0u8; 64];
-    rng.fill_bytes(&mut plumo_seed[..]);
+    let rng = &mut thread_rng();
+    let mut nimiq_seed = vec![0u8; 64];
+    rng.fill_bytes(&mut nimiq_seed[..]);
 
-    let plumo_seed = SecretVec::new(plumo_seed);
-    let mut hasher = Blake2s::with_params(&[], &[], PLUMO_SETUP_PERSONALIZATION);
+    let nimiq_seed = SecretVec::new(nimiq_seed);
+    let mut hasher = Blake2s::with_params(&[], &[], NIMIQ_SETUP_PERSONALIZATION);
     hasher.update(entropy.expose_secret().as_bytes());
-    hasher.update(plumo_seed.expose_secret());
+    hasher.update(nimiq_seed.expose_secret());
 
-    let private_key = LocalWallet::new(&mut rng);
-    let attestation_signature = block_on(private_key.sign_message(&attestation_message))
-        .expect("Should have signed attestation");
-    let address = address_to_string(&private_key.address());
-    let private_key = private_key.signer().to_bytes();
+    let key_pair = KeyPair::generate(rng);
+    let attestation_signature = block_on(async { key_pair.sign(&attestation_message.as_bytes()) });
+    let public_key = key_pair.public.clone();
+    let key_pair = key_pair.private.as_bytes();
 
-    let encrypted_plumo_seed = encrypt(plumo_encryptor, hasher.finalize().as_slice())
-        .expect("Should have encrypted Plumo seed");
-    let encrypted_plumo_private_key = encrypt(private_key_encryptor, &private_key[..])
-        .expect("Should have encrypted private key");
+    let encrypted_nimiq_seed = encrypt(nimiq_encryptor, hasher.finalize().as_slice())
+        .expect("Should have encrypted Nimiq seed");
+    let encrypted_nimiq_private_key =
+        encrypt(private_key_encryptor, &key_pair[..]).expect("Should have encrypted private key");
 
-    let plumo_setup_keys = PlumoSetupKeys {
-        encrypted_seed: encrypted_plumo_seed.to_string(),
-        encrypted_private_key: encrypted_plumo_private_key.to_string(),
+    let nimiq_setup_keys = NimiqSetupKeys {
+        encrypted_seed: encrypted_nimiq_seed.to_string(),
+        encrypted_private_key: encrypted_nimiq_private_key.to_string(),
         encrypted_extra_entropy: None,
         attestation: Attestation {
             id: attestation_message,
-            address: address.clone(),
-            signature: attestation_signature.to_string(),
+            public_key: public_key.clone(),
+            signature: attestation_signature,
         },
-        address,
+        public_key,
     };
     file.write_all(
-        &serde_json::to_vec(&plumo_setup_keys).expect("Should have converted setup keys to vector"),
+        &serde_json::to_vec(&nimiq_setup_keys).expect("Should have converted setup keys to vector"),
     )
     .expect("Should have written setup keys successfully to file");
     file.sync_all().expect("Should have synced to disk");
     println!(
         "Done! Your keys are ready in {}. Your address is : {}",
-        &opts.keys_file, plumo_setup_keys.address
+        &opts.keys_file, nimiq_setup_keys.public_key
     );
 }

@@ -22,7 +22,7 @@ export NVM_DIR="\$HOME/.nvm"
 nvm install node
 
 rm -rf snark-setup-coordinator
-git clone https://github.com/celo-org/snark-setup-coordinator
+git clone https://github.com/nimiq/snark-setup-coordinator
 cd snark-setup-coordinator/coordinator-service
 git checkout $COMMIT
 npm install

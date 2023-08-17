@@ -6,25 +6,25 @@
 use crate::{
     error::{HttpError, UtilsError},
     utils::{
-        MaxRetriesHandler, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_TIMEOUT_IN_SECONDS,
-        DEFAULT_MAX_RETRIES, DEFAULT_NUM_PARALLEL_CHUNKS,
+        MaxRetriesHandler,
+        DEFAULT_CHUNK_SIZE, //DEFAULT_CHUNK_TIMEOUT_IN_SECONDS,
+        DEFAULT_MAX_RETRIES,
+        DEFAULT_NUM_PARALLEL_CHUNKS,
     },
 };
 use anyhow::Result;
-use azure_core::{
-    BlobNameSupport, BlockIdSupport, BodySupport, ContainerNameSupport, TimeoutSupport,
+use azure_storage::prelude::*;
+use azure_storage_blobs::{
+    blob::{BlobBlockType, BlockList},
+    container::PublicAccess,
+    prelude::*,
 };
-use azure_storage::blob::blob::{BlobBlockType, BlockList, BlockListSupport};
-use azure_storage::blob::container::{PublicAccess, PublicAccessSupport};
-use azure_storage::core::key_client::KeyClient;
-use azure_storage::{client, Blob, Container};
 use byteorder::{LittleEndian, WriteBytesExt};
 use futures_retry::FutureRetry;
 use std::cmp;
 use std::convert::TryFrom;
 use std::fs::File;
 use std::io::prelude::*;
-use std::ops::Deref;
 use url::Url;
 
 /// Converts the block index into an block_id
@@ -52,52 +52,39 @@ fn parse_sas(sas: &str) -> Result<(String, String, String)> {
     Ok((account.to_string(), container.to_string(), blob_path))
 }
 
-pub async fn upload_sas(file_path: &str, sas: &str) -> Result<()> {
-    let (account, container, path) = parse_sas(sas)?;
-    let client = client::with_azure_sas(&account, sas);
+pub async fn upload_sas(file_path: &String, sas_url: &String) -> Result<()> {
+    let (account, container, blob_name) = parse_sas(sas_url)?;
 
-    upload_with_client(&client, &container, &path, file_path).await
+    let storage_credentials = StorageCredentials::Key(account.clone(), sas_url.clone());
+    let service_client = BlobServiceClient::new(account, storage_credentials);
+    let container_client = service_client.container_client(container);
+    let blob_client = container_client.blob_client(blob_name);
+
+    upload_with_client(&blob_client, file_path).await
 }
 
 pub async fn upload_access_key(
-    file_path: &str,
-    access_key: &str,
-    account: &str,
-    container: &str,
-    path: &str,
+    file_path: &String,
+    access_key: &String,
+    account: &String,
+    container: &String,
+    blob_name: &String,
 ) -> Result<()> {
-    let client = client::with_access_key(account, access_key);
-    let mut found_container = false;
-    for remote_container in client
-        .list_containers()
-        .finalize()
-        .await?
-        .incomplete_vector
-        .deref()
-        .into_iter()
-    {
-        if container == remote_container.name {
-            found_container = true;
-            break;
-        }
-    }
-    if !found_container {
-        client
-            .create_container()
-            .with_container_name(container)
-            .with_public_access(PublicAccess::Container)
-            .finalize()
+    let storage_credentials = StorageCredentials::Key(account.clone(), access_key.clone());
+    let container_client =
+        BlobServiceClient::new(account, storage_credentials).container_client(container);
+
+    if !container_client.exists().await? {
+        container_client
+            .create()
+            .public_access(PublicAccess::Container)
             .await?;
     }
-    upload_with_client(&client, container, path, file_path).await
+
+    upload_with_client(&container_client.blob_client(blob_name), file_path).await
 }
 
-pub async fn upload_with_client(
-    client: &KeyClient,
-    container: &str,
-    path: &str,
-    file_path: &str,
-) -> Result<()> {
+pub async fn upload_with_client(blob_client: &BlobClient, file_path: &String) -> Result<()> {
     let block_size = DEFAULT_CHUNK_SIZE;
 
     let mut file = File::open(file_path)?;
@@ -111,26 +98,17 @@ pub async fn upload_with_client(
         let mut data = vec![0; send_size as usize];
         file.read_exact(&mut data)?;
 
-        let client = client.clone();
-        let container = container.to_string();
-        let path = path.to_string();
+        let client = blob_client.clone();
         let block_id_for_spawn = block_id.clone();
         let jh = tokio::spawn(FutureRetry::new(
             move || {
                 let data = data.clone();
                 let client = client.clone();
-                let container = container.clone();
-                let path = path.clone();
                 let block_id_for_spawn = block_id_for_spawn.clone();
                 async move {
                     client
-                        .put_block()
-                        .with_container_name(&container)
-                        .with_blob_name(&path)
-                        .with_body(&data)
-                        .with_block_id(&block_id_for_spawn)
-                        .with_timeout(DEFAULT_CHUNK_TIMEOUT_IN_SECONDS)
-                        .finalize()
+                        .put_block(block_id_for_spawn, data)
+                        // .with_timeout(DEFAULT_CHUNK_TIMEOUT_IN_SECONDS)
                         .await
                         .map_err(|e| e.into())
                 }
@@ -139,7 +117,9 @@ pub async fn upload_with_client(
         ));
         futures.push(jh);
 
-        blocks.blocks.push(BlobBlockType::Uncommitted(block_id));
+        blocks
+            .blocks
+            .push(BlobBlockType::Uncommitted(block_id.into()));
         sent += send_size;
         if futures.len() == DEFAULT_NUM_PARALLEL_CHUNKS {
             futures::future::try_join_all(futures)
@@ -153,13 +133,7 @@ pub async fn upload_with_client(
         .await
         .map_err(|e| UtilsError::RetryFailedError(e.to_string()))?;
 
-    client
-        .put_block_list()
-        .with_container_name(&container)
-        .with_blob_name(&path)
-        .with_block_list(&blocks)
-        .finalize()
-        .await?;
+    blob_client.put_block_list(blocks).await?;
 
     Ok(())
 }

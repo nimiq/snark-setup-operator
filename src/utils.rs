@@ -1,4 +1,4 @@
-pub const PLUMO_SETUP_PERSONALIZATION: &[u8] = b"PLUMOSET";
+pub const NIMIQ_SETUP_PERSONALIZATION: &[u8] = b"NIMIQSET";
 pub const ADDRESS_LENGTH: usize = 20;
 pub const ADDRESS_LENGTH_IN_HEX: usize = 42;
 pub const SIGNATURE_LENGTH_IN_HEX: usize = 130;
@@ -11,17 +11,16 @@ pub const BEACON_HASH_LENGTH: usize = 32;
 
 use crate::blobstore::{upload_access_key, upload_sas};
 use crate::data_structs::{
-    Attestation, Ceremony, Parameters, PlumoSetupKeys, ProcessorData, Response,
+    Attestation, Ceremony, NimiqSetupKeys, Parameters, ParticipantId, ProcessorData, Response,
 };
 use crate::error::{UtilsError, VerifyTranscriptError};
 use age::{
     armor::{ArmoredWriter, Format},
     EncryptError, Encryptor,
 };
-use algebra::PairingEngine;
 use anyhow::Result;
-use ethers::types::{Address, Signature};
-use hex::ToHex;
+use ark_ec::pairing::Pairing;
+use nimiq_keys::Signature;
 use phase1::{ContributionMode, Phase1Parameters, ProvingSystem};
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, RANGE};
 use secrecy::{ExposeSecret, SecretString, SecretVec};
@@ -30,7 +29,6 @@ use std::{
     fs::{copy, remove_file, File, OpenOptions},
     io::{Read, Write},
     path::Path,
-    str::FromStr,
 };
 use tracing::warn;
 
@@ -142,17 +140,17 @@ pub async fn download_file_direct_async(url: &str, file_path: &str) -> Result<()
     Ok(())
 }
 
-pub async fn upload_file_to_azure_async(file_path: &str, url: &str) -> Result<()> {
+pub async fn upload_file_to_azure_async(file_path: &String, url: &String) -> Result<()> {
     upload_sas(file_path, url).await?;
     Ok(())
 }
 
 pub async fn upload_file_to_azure_with_access_key_async(
-    file_path: &str,
-    access_key: &str,
-    account: &str,
-    container: &str,
-    path: &str,
+    file_path: &String,
+    access_key: &String,
+    account: &String,
+    container: &String,
+    path: &String,
 ) -> Result<()> {
     upload_access_key(file_path, access_key, account, container, path).await?;
     Ok(())
@@ -179,10 +177,6 @@ pub async fn upload_file_direct_async(
     Ok(())
 }
 
-pub fn vrs_to_rsv(rsv: &str) -> String {
-    format!("{}{}{}", &rsv[2..66], &rsv[66..130], &rsv[..2])
-}
-
 pub fn remove_file_if_exists(file_path: &str) -> Result<()> {
     if Path::new(file_path).exists() {
         remove_file(file_path)?;
@@ -207,23 +201,21 @@ pub async fn get_ceremony(url: &str) -> Result<Ceremony> {
 
 use crate::transcript_data_structs::Transcript;
 use blake2::{Blake2s, Digest};
-use ethers::signers::{LocalWallet, Signer};
 use futures_retry::{ErrorHandler, FutureRetry, RetryPolicy};
+use nimiq_keys::KeyPair;
 use rand::rngs::OsRng;
 use rand::RngCore;
 
-pub fn verify_signed_data<T: Serialize>(data: &T, signature: &str, id: &str) -> Result<()> {
-    let signature = Signature::from_str(&signature[2..])?;
+pub fn verify_signed_data<T: Serialize>(
+    data: &T,
+    signature: &Signature,
+    id: &ParticipantId,
+) -> Result<()> {
     let serialized_data = serde_json::to_string(data)?;
 
-    let deserialized_id = hex::decode(&id[2..])?;
-    if deserialized_id.len() != ADDRESS_LENGTH {
-        return Err(VerifyTranscriptError::IDWrongLength(deserialized_id.len()).into());
+    if !id.verify(&signature, serialized_data.as_bytes()) {
+        Err(VerifyTranscriptError::InvalidSignature)?;
     }
-    let mut address = [0u8; ADDRESS_LENGTH];
-    address.copy_from_slice(&deserialized_id);
-    let address = Address::from(address);
-    signature.verify(serialized_data, address)?;
 
     Ok(())
 }
@@ -278,19 +270,15 @@ pub fn check_new_challenge_hashes_same(a: &str, b: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn get_authorization_value(
-    private_key: &LocalWallet,
-    method: &str,
-    path: &str,
-) -> Result<String> {
-    let address = private_key.address().encode_hex::<String>();
+pub fn get_authorization_value(key_pair: &KeyPair, method: &str, path: &str) -> Result<String> {
+    let public_key = key_pair.public.clone();
     let message = format!("{} /{}", method.to_lowercase(), path.to_lowercase());
-    let signature: Signature = futures::executor::block_on(private_key.sign_message(message))?;
-    let authorization = format!("Celo 0x{}:0x{}", address, signature.to_string());
+    let signature: Signature = key_pair.sign(message.as_bytes());
+    let authorization = format!("Nimiq {}:{}", public_key, signature.to_string());
     Ok(authorization)
 }
 
-pub fn create_parameters_for_chunk<E: PairingEngine>(
+pub fn create_parameters_for_chunk<E: Pairing>(
     ceremony_parameters: &Parameters,
     chunk_index: usize,
 ) -> Result<Phase1Parameters<E>> {
@@ -306,7 +294,7 @@ pub fn create_parameters_for_chunk<E: PairingEngine>(
     Ok(parameters)
 }
 
-pub fn create_full_parameters<E: PairingEngine>(
+pub fn create_full_parameters<E: Pairing>(
     ceremony_parameters: &Parameters,
 ) -> Result<Phase1Parameters<E>> {
     let proving_system = proving_system_from_str(ceremony_parameters.proving_system.as_str())?;
@@ -318,14 +306,10 @@ pub fn create_full_parameters<E: PairingEngine>(
     Ok(parameters)
 }
 
-pub fn sign_json(private_key: &LocalWallet, value: &serde_json::Value) -> Result<String> {
+pub fn sign_json(key_pair: &KeyPair, value: &serde_json::Value) -> Result<Signature> {
     let message = serde_json::to_string(value)?;
-    let signature: Signature = futures::executor::block_on(private_key.sign_message(message))?;
-    Ok(format!("0x{}", signature.to_string()))
-}
-
-pub fn address_to_string(address: &Address) -> String {
-    format!("0x{}", address.encode_hex::<String>())
+    let signature: Signature = key_pair.sign(message.as_bytes());
+    Ok(signature)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -397,8 +381,8 @@ pub fn read_keys(
     {
         std::fs::File::open(&keys_file)?.read_to_string(&mut contents)?;
     }
-    let mut keys: PlumoSetupKeys = serde_json::from_str(&contents)?;
-    let description = "Enter your Plumo setup passphrase";
+    let mut keys: NimiqSetupKeys = serde_json::from_str(&contents)?;
+    let description = "Enter your Nimiq setup passphrase";
     let passphrase = if should_use_stdin {
         println!("{}:", description);
         SecretString::new(rpassword::read_password()?)
@@ -406,8 +390,8 @@ pub fn read_keys(
         age::cli_common::read_secret(description, "Passphrase", None)
             .map_err(|_| UtilsError::CouldNotReadPassphraseError)?
     };
-    let plumo_seed_from_file = SecretVec::new(decrypt(&passphrase, &keys.encrypted_seed)?);
-    let plumo_private_key_from_file =
+    let nimiq_seed_from_file = SecretVec::new(decrypt(&passphrase, &keys.encrypted_seed)?);
+    let nimiq_key_pair_from_file =
         SecretVec::new(decrypt(&passphrase, &keys.encrypted_private_key)?);
 
     if should_collect_extra_entropy && keys.encrypted_extra_entropy.is_none() && !should_use_stdin {
@@ -421,7 +405,7 @@ pub fn read_keys(
         rng.fill_bytes(&mut extra_entropy[..]);
 
         let extra_entropy = SecretVec::new(extra_entropy);
-        let mut hasher = Blake2s::with_params(&[], &[], PLUMO_SETUP_PERSONALIZATION);
+        let mut hasher = Blake2s::with_params(&[], &[], NIMIQ_SETUP_PERSONALIZATION);
         hasher.update(extra_entropy.expose_secret());
         hasher.update(entered_entropy.expose_secret());
         let combined_entropy = SecretVec::<u8>::new(hasher.finalize().as_slice().to_vec());
@@ -432,18 +416,18 @@ pub fn read_keys(
         file.sync_all()?;
     }
 
-    let plumo_seed = match keys.encrypted_extra_entropy {
-        None => plumo_seed_from_file,
+    let nimiq_seed = match keys.encrypted_extra_entropy {
+        None => nimiq_seed_from_file,
         Some(encrypted_entropy) => {
             let entropy = SecretVec::new(decrypt(&passphrase, &encrypted_entropy)?);
-            let mut hasher = Blake2s::with_params(&[], &[], PLUMO_SETUP_PERSONALIZATION);
-            hasher.update(plumo_seed_from_file.expose_secret());
+            let mut hasher = Blake2s::with_params(&[], &[], NIMIQ_SETUP_PERSONALIZATION);
+            hasher.update(nimiq_seed_from_file.expose_secret());
             hasher.update(entropy.expose_secret());
             SecretVec::<u8>::new(hasher.finalize().as_slice().to_vec())
         }
     };
 
-    Ok((plumo_seed, plumo_private_key_from_file, keys.attestation))
+    Ok((nimiq_seed, nimiq_key_pair_from_file, keys.attestation))
 }
 
 pub fn collect_processor_data() -> Result<Vec<ProcessorData>> {
@@ -498,11 +482,11 @@ impl ErrorHandler<anyhow::Error> for MaxRetriesHandler {
     }
 }
 
-pub fn challenge_size<E: PairingEngine>(parameters: &Phase1Parameters<E>) -> u64 {
+pub fn challenge_size<E: Pairing>(parameters: &Phase1Parameters<E>) -> u64 {
     parameters.accumulator_size as u64
 }
 
-pub fn response_size<E: PairingEngine>(parameters: &Phase1Parameters<E>) -> u64 {
+pub fn response_size<E: Pairing>(parameters: &Phase1Parameters<E>) -> u64 {
     parameters.contribution_size as u64
 }
 
@@ -542,8 +526,8 @@ pub fn backup_transcript(transcript: &Transcript) -> Result<()> {
     Ok(())
 }
 
-pub fn format_attestation(attestation_message: &str, address: &str, signature: &str) -> String {
-    format!("{} {} {}", attestation_message, address, signature)
+pub fn format_attestation(attestation_message: &str, public_key: &str, signature: &str) -> String {
+    format!("{} {} {}", attestation_message, public_key, signature)
 }
 
 pub fn extract_signature_from_attestation(attestation: &str) -> Result<(String, String, String)> {
@@ -563,8 +547,8 @@ pub fn write_attestation_to_file(attestation: &Attestation, path: &str) -> Resul
     File::create(path)?.write_all(
         format_attestation(
             &attestation.id,
-            &attestation.address,
-            &attestation.signature,
+            &attestation.public_key.to_hex(),
+            &attestation.signature.to_hex(),
         )
         .as_bytes(),
     )?;

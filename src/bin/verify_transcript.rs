@@ -1,5 +1,9 @@
-use algebra::{Bls12_377, PairingEngine, BW6_761};
 use anyhow::Result;
+use ark_bls12_377::Bls12_377;
+use ark_bw6_761::BW6_761;
+use ark_ec::pairing::Pairing;
+use ark_mnt4_753::MNT4_753;
+use ark_mnt6_753::MNT6_753;
 use gumdrop::Options;
 #[allow(unused_imports)]
 use phase1_cli::*;
@@ -217,9 +221,8 @@ impl TranscriptVerifier {
         Ok(verifier)
     }
 
-    fn run<E: PairingEngine>(&self) -> Result<()> {
-        let mut rt = tokio::runtime::Builder::new()
-            .threaded_scheduler()
+    fn run<E: Pairing>(&self) -> Result<()> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
@@ -545,7 +548,7 @@ impl TranscriptVerifier {
                 round_index,
                 participant_ids_from_poks
                     .iter()
-                    .cloned()
+                    .map(|id| id.to_hex())
                     .collect::<Vec<_>>()
                     .join("\n")
             );
@@ -758,6 +761,8 @@ fn main() {
     (match opts.curve.as_str() {
         "bw6" => verifier.run::<BW6_761>(),
         "bls12_377" => verifier.run::<Bls12_377>(),
+        "mnt4_753" => verifier.run::<MNT4_753>(),
+        "mnt6_753" => verifier.run::<MNT6_753>(),
         _ => Err(VerifyTranscriptError::UnsupportedCurveKindError(opts.curve.clone()).into()),
     })
     .expect("Should have run successfully");

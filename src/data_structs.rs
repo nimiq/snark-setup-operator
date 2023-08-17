@@ -1,14 +1,17 @@
 use anyhow::Result;
+use nimiq_keys::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::VerifyTranscriptError;
 
+pub type ParticipantId = PublicKey;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedData {
     pub data: Value,
-    pub signature: String,
+    pub signature: Signature,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -25,10 +28,10 @@ pub struct ContributionMetadata {
 pub struct Contribution {
     pub metadata: Option<ContributionMetadata>,
 
-    pub contributor_id: Option<String>,
+    pub contributor_id: Option<ParticipantId>,
     pub contributed_location: Option<String>,
     pub contributed_data: Option<SignedData>,
-    pub verifier_id: Option<String>,
+    pub verifier_id: Option<ParticipantId>,
     pub verified_location: Option<String>,
     pub verified: bool,
     pub verified_data: Option<SignedData>,
@@ -60,7 +63,7 @@ impl Contribution {
         Ok(contributed_data_parsed)
     }
 
-    pub fn contributor_id(&self) -> Result<String> {
+    pub fn contributor_id(&self) -> Result<ParticipantId> {
         let contributor_id = self
             .contributor_id
             .as_ref()
@@ -70,7 +73,7 @@ impl Contribution {
         Ok(contributor_id)
     }
 
-    pub fn verifier_id(&self) -> Result<String> {
+    pub fn verifier_id(&self) -> Result<ParticipantId> {
         let verifier_id = self
             .verifier_id
             .as_ref()
@@ -109,7 +112,7 @@ pub struct ChunkMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct Chunk {
     pub chunk_id: String,
-    pub lock_holder: Option<String>,
+    pub lock_holder: Option<ParticipantId>,
     pub contributions: Vec<Contribution>,
     pub metadata: Option<ChunkMetadata>,
 }
@@ -131,8 +134,8 @@ pub struct Ceremony {
     pub version: u64,
     pub max_locks: u64,
     pub shutdown_signal: bool,
-    pub contributor_ids: Vec<String>,
-    pub verifier_ids: Vec<String>,
+    pub contributor_ids: Vec<ParticipantId>,
+    pub verifier_ids: Vec<ParticipantId>,
     pub chunks: Vec<Chunk>,
     pub parameters: Parameters,
     pub attestations: Option<Vec<Attestation>>,
@@ -143,14 +146,14 @@ pub struct Ceremony {
 #[serde(rename_all = "camelCase")]
 pub struct ChunkInfo {
     pub chunk_id: String,
-    pub lock_holder: Option<String>,
+    pub lock_holder: Option<ParticipantId>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkDownloadInfo {
     pub chunk_id: String,
-    pub lock_holder: Option<String>,
+    pub lock_holder: Option<ParticipantId>,
     pub last_response_url: Option<String>,
     pub last_challenge_url: Option<String>,
     pub previous_challenge_url: Option<String>,
@@ -196,7 +199,7 @@ pub struct ContributedData {
 #[derive(Debug, Clone)]
 pub struct SignedContributedDataParsed {
     pub data: ContributedData,
-    pub signature: String,
+    pub signature: Signature,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -210,14 +213,14 @@ pub struct VerifiedData {
 #[derive(Debug, Clone)]
 pub struct SignedVerifiedDataParsed {
     pub data: VerifiedData,
-    pub signature: String,
+    pub signature: Signature,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ContributionUploadUrl {
     pub chunk_id: String,
-    pub participant_id: String,
+    pub participant_id: ParticipantId,
     pub write_url: String,
 }
 
@@ -225,18 +228,18 @@ pub struct ContributionUploadUrl {
 #[serde(rename_all = "camelCase")]
 pub struct Attestation {
     pub id: String,
-    pub signature: String,
-    pub address: String,
+    pub signature: Signature,
+    pub public_key: PublicKey,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct PlumoSetupKeys {
+pub struct NimiqSetupKeys {
     pub encrypted_seed: String,
     pub encrypted_private_key: String,
     pub encrypted_extra_entropy: Option<String>,
     pub attestation: Attestation,
-    pub address: String,
+    pub public_key: PublicKey,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

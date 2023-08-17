@@ -47,8 +47,8 @@ The `no-asm` binaries will run on CPUs without ADX and BMI2 support, which has b
 
 Generate keys for verifier and contributor:
 ```
-cargo run --release --bin generate -- -k plumo-verifier.keys
-cargo run --release --bin generate -- -k plumo-contributor.keys
+cargo run --release --bin generate -- -k nimiq-verifier.keys
+cargo run --release --bin generate -- -k nimiq-contributor.keys
 ```
 
 Sample test file:
@@ -61,7 +61,7 @@ Sample test file:
     "contributorIds": [
     ],
     "verifierIds": [
-        "address from plumo-verifier.keys"
+        "address from nimiq-verifier.keys"
     ],
     "chunks": [
     ]
@@ -76,21 +76,21 @@ COORDINATOR_AUTH_TYPE=celo
 
 Initializing ceremony:
 ```
-RUST_LOG=info cargo run --bin new_ceremony --release -- --upload-mode direct --chunk-size 10 --powers 12 --server-url http://localhost:8080 --verifier $(cat plumo-verifier.keys | jq .address -r) --deployer $(cat plumo-verifier.keys | jq .address -r) --output-dir ~/snark-setup-coordinator/coordinator-service/.storage -k plumo-verifier.keys
+RUST_LOG=info cargo run --bin new_ceremony --release -- --upload-mode direct --chunk-size 10 --powers 12 --server-url http://localhost:8080 --verifier $(cat nimiq-verifier.keys | jq .address -r) --deployer $(cat nimiq-verifier.keys | jq .address -r) --output-dir ~/snark-setup-coordinator/coordinator-service/.storage -k nimiq-verifier.keys
 ```
 
 Add the test participant and verifier:
 ```
-RUST_LOG=info cargo run --bin control --release -- --keys-file plumo-verifier.keys add-participant --participant-id $(cat plumo-contributor.keys | jq .address -r)
-RUST_LOG=info cargo run --bin control --release -- --keys-file plumo-verifier.keys add-verifier --participant-id $(cat plumo-verifier.keys | jq .address -r)
+RUST_LOG=info cargo run --bin control --release -- --keys-file nimiq-verifier.keys add-participant --participant-id $(cat nimiq-contributor.keys | jq .address -r)
+RUST_LOG=info cargo run --bin control --release -- --keys-file nimiq-verifier.keys add-verifier --participant-id $(cat nimiq-verifier.keys | jq .address -r)
 ```
 
 Contribute:
 ```
-RUST_LOG=info cargo run --bin contribute --release -- --keys-file plumo-contributor.keys
+RUST_LOG=info cargo run --bin contribute --release -- --keys-file nimiq-contributor.keys
 ```
 
 Verify contribution:
 ```
-RUST_LOG=info cargo run --bin contribute --release -- --participation-mode verify --keys-file plumo-verifier.keys
+RUST_LOG=info cargo run --bin contribute --release -- --participation-mode verify --keys-file nimiq-verifier.keys
 ```

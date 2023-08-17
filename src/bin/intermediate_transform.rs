@@ -1,13 +1,16 @@
-use algebra::{Bls12_377, PairingEngine, BW6_761};
 use anyhow::Result;
+use ark_bls12_377::Bls12_377;
+use ark_bw6_761::BW6_761;
+use ark_ec::pairing::Pairing;
+use ark_mnt4_753::MNT4_753;
+use ark_mnt6_753::MNT6_753;
 use gumdrop::Options;
-#[allow(unused_imports)]
-use phase1_cli::*;
 use snark_setup_operator::transcript_data_structs::Transcript;
 use snark_setup_operator::{
     error::VerifyTranscriptError,
     utils::{create_full_parameters, remove_file_if_exists},
 };
+use std::ops::Neg;
 use std::{fs::File, io::Read};
 
 const PHASE2_FILENAME: &str = "phase2_init";
@@ -45,7 +48,10 @@ impl IntermediateTransform {
         Ok(parameters)
     }
 
-    fn run<E: PairingEngine>(&self) -> Result<()> {
+    fn run<E: Pairing>(&self) -> Result<()>
+    where
+        E::G1Affine: Neg<Output = E::G1Affine>,
+    {
         let ceremony = self
             .transcript
             .rounds
@@ -76,6 +82,8 @@ fn main() {
     (match opts.curve.as_str() {
         "bw6" => transformer.run::<BW6_761>(),
         "bls12_377" => transformer.run::<Bls12_377>(),
+        "mnt4_753" => transformer.run::<MNT4_753>(),
+        "mnt6_753" => transformer.run::<MNT6_753>(),
         _ => Err(VerifyTranscriptError::UnsupportedCurveKindError(opts.curve.clone()).into()),
     })
     .expect("Should have run successfully");
