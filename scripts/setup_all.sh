@@ -13,13 +13,13 @@ retry 5 ./setup_server.sh "$KEYFILE" $COORDINATOR_IP
 
 children_pids=()
 
-rm -f contribute_addresses
+rm -f contribute_public_keys
 while read p; do
   retry 5 ./setup_client.sh "$KEYFILE" $p $COORDINATOR_IP contribute &
   children_pids+=("$!")
 done < contributors_ips
 
-rm -f verify_addresses
+rm -f verify_public_keys
 while read p; do
   retry 5 ./setup_client.sh "$KEYFILE" $p $COORDINATOR_IP verify &
   children_pids+=("$!")

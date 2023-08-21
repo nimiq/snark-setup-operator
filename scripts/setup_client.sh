@@ -13,7 +13,7 @@ ENDSSH
 
 echo Setting up client
 
-ADDRESS=$(ssh -i "$KEYFILE" -o LogLevel=quiet -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@$IP <<ENDSSH
+PUBLIC_KEY=$(ssh -i "$KEYFILE" -o LogLevel=quiet -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@$IP <<ENDSSH
 set -e -v
 {
   sudo apt update
@@ -35,13 +35,13 @@ set -e -v
   chmod +x run_client.sh
   tmux new-session -d -s contributor ./run_client.sh
 } 2>/dev/null 1>/dev/null
-cat nimiq.keys | jq '.address' -r
+cat nimiq.keys | jq '.publicKey' -r
 set +e
 exit 0
 ENDSSH
 )
 
-echo $ADDRESS >> ${PARTICIPATION_MODE}_addresses
+echo $PUBLIC_KEY >> ${PARTICIPATION_MODE}_public_keys
 
 echo Set up client
 

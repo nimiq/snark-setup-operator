@@ -120,7 +120,7 @@ fn main() {
     .expect("Should have written setup keys successfully to file");
     file.sync_all().expect("Should have synced to disk");
     println!(
-        "Done! Your keys are ready in {}. Your address is : {}",
+        "Done! Your keys are ready in {}. Your public key is : {}",
         &opts.keys_file, nimiq_setup_keys.public_key
     );
 }

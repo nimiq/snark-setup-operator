@@ -1,7 +1,4 @@
 pub const NIMIQ_SETUP_PERSONALIZATION: &[u8] = b"NIMIQSET";
-pub const ADDRESS_LENGTH: usize = 20;
-pub const ADDRESS_LENGTH_IN_HEX: usize = 42;
-pub const SIGNATURE_LENGTH_IN_HEX: usize = 130;
 pub const DEFAULT_MAX_RETRIES: usize = 5;
 pub const ONE_MB: usize = 1024 * 1024;
 pub const DEFAULT_CHUNK_SIZE: u64 = 1 * (ONE_MB as u64);

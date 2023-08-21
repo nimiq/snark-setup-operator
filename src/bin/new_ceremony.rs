@@ -135,7 +135,7 @@ async fn run<E: Pairing>(opts: &NewCeremonyOpts, key_pair: &[u8]) -> Result<()> 
         return Err(anyhow!("Deployer must match the private key"));
     }
     if ceremony.version != 0 || !ceremony.verifier_ids.contains(&public_key) {
-        return Err(anyhow!("Can only initialize a ceremony with version 0 and the verifiers list must contain the address matching the private key"));
+        return Err(anyhow!("Can only initialize a ceremony with version 0 and the verifiers list must contain the public key matching the private key"));
     }
 
     let upload_mode = upload_mode_from_str(&opts.upload_mode)?;

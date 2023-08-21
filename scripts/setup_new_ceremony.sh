@@ -14,11 +14,11 @@ export VERIFIERS=""
 
 while read p; do
   CONTRIBUTORS="$CONTRIBUTORS --participant $p"
-done < contribute_addresses
+done < contribute_public_keys
 
 while read p; do
   VERIFIERS="$VERIFIERS --verifier $p"
-done < verify_addresses
+done < verify_public_keys
 
 ssh -i "$KEYFILE" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null azureuser@$IP <<ENDSSH
 set -e -v
