@@ -7,3 +7,4 @@ ceremony_*
 new_challenge
 new_challenge.hash
 snark-setup-coordinator
+.DS_Store

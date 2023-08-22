@@ -14,7 +14,7 @@ npm run build
 
 cp $BASE_DIR/empty_phase1.json ceremony
 npm run reset-db
-JSON_LOGGING=true COORDINATOR_CONFIG_PATH=ceremony/empty_phase1.json COORDINATOR_AUTH_TYPE=celo npm run start-nodemon &
+JSON_LOGGING=true COORDINATOR_CONFIG_PATH=ceremony/empty_phase1.json COORDINATOR_AUTH_TYPE=nimiq npm run start-nodemon &
 sleep 5
 popd
 
