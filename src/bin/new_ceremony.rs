@@ -180,7 +180,7 @@ async fn run<E: Pairing>(opts: &NewCeremonyOpts, key_pair: &[u8]) -> Result<()> 
         let ceremony: Ceremony = serde_json::from_str::<Ceremony>(&ceremony_contents)?;
         info!("Updating ceremony");
         let client = reqwest::Client::new();
-        let authorization = get_authorization_value(&key_pair, "PUT", "/ceremony")?;
+        let authorization = get_authorization_value(&key_pair, "PUT", "ceremony")?;
         client
             .put(server_url.as_str())
             .header(AUTHORIZATION, authorization)
