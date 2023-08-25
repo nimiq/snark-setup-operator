@@ -68,11 +68,14 @@ futures = "0.3"
 futures-retry = "0.5.0"
 blake2 = "0.9"
 rpassword = "5.0.0"
-keep-awake = { git = "https://github.com/mrsmkl/keep-awake-rs", rev = "63da170407e4ced0e9bbaf42b380fceea6436ea6" }
+keep-awake = { git = "https://github.com/mrsmkl/keep-awake-rs", rev = "ce9922386b210450a7681a015b4dd991aed27fe2" }
 rayon = "1.3.0"
 num_cpus = "1.13"
 ring = "0.16.19"
 cfg-if = "1.0"
+regex = { version = "1.9.3", features = [
+    "unicode-case",
+] } # required as workaround
 
 [target.'cfg(not(target_arch = "aarch64"))'.dependencies]
 sysinfo = { version = "0.15.3" }

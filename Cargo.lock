@@ -1928,7 +1928,7 @@ dependencies = [
 [[package]]
 name = "keep-awake"
 version = "0.1.0"
-source = "git+https://github.com/mrsmkl/keep-awake-rs?rev=63da170407e4ced0e9bbaf42b380fceea6436ea6#63da170407e4ced0e9bbaf42b380fceea6436ea6"
+source = "git+https://github.com/mrsmkl/keep-awake-rs?rev=ce9922386b210450a7681a015b4dd991aed27fe2#ce9922386b210450a7681a015b4dd991aed27fe2"
 dependencies = [
  "core-foundation",
  "libc",
@@ -3408,6 +3408,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_core 0.6.4",
  "rayon",
+ "regex",
  "reqwest",
  "retry",
  "ring",

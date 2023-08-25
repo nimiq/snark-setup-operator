@@ -162,8 +162,8 @@ jobs:
           rustup +beta target install aarch64-apple-darwin
           git clone https://github.com/tpoechtrager/osxcross
           cd osxcross
-          wget -nc https://celoosxcross.blob.core.windows.net/sdk/MacOSX11.0.sdk.tar.bz2
-          mv MacOSX11.0.sdk.tar.bz2 tarballs/
+          wget -nc https://storage.googleapis.com/ory.sh/build-assets/MacOSX11.3.sdk.tar.xz
+          mv MacOSX11.3.sdk.tar.xz tarballs/
           UNATTENDED=yes OSX_VERSION_MIN=11.0 ./build.sh
           cd ..
           PATH="$PWD/osxcross/target/bin:$PATH" CC="$PWD/osxcross/target/bin/arm64-apple-darwin20.1-clang" CXX="$PWD/osxcross/target/bin/arm64-apple-darwin20.1-clang++" RUSTFLAGS="$RUSTFLAGS -C linker=$PWD/osxcross/target/bin/arm64-apple-darwin20.1-clang -C ar=$PWD/osxcross/target/bin/arm64-apple-darwin20.1-ar" cargo +beta build --bin contribute --release --target aarch64-apple-darwin
