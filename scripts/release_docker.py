@@ -2,7 +2,7 @@
 # https://cloud.google.com/container-registry/docs/pushing-and-pulling
 
 import click
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, run
 import sys 
 
 @click.group()
@@ -11,18 +11,13 @@ def cli(debug):
     click.echo('Debug mode is %s' % ('on' if debug else 'off'))
 
 @cli.command()  
-@click.option('--repo', default="us.gcr.io/celo-testnet")
+@click.option('--repo', default="us.gcr.io/nimiq-testnet")
 @click.option('--tag', default="test")
 def release_docker(repo, tag):
     # Build and push Service
-    build_command = f'docker build -f Dockerfile -t {repo}/snark-ceremony-operator:{tag} .'
+    build_command = f'docker build --platform linux/amd64 -f Dockerfile -t {repo}/snark-ceremony-operator:{tag} .'
     print(f"Running Command: {build_command}")
-    build = Popen([build_command], shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    output, error = build.communicate()
-    if error:
-        print(error.decode("utf-8") )
-    if output:
-        print(output.decode("utf-8") )
+    run([build_command], shell=True, stdin=PIPE)
     
     push_command = f'docker push {repo}/snark-ceremony-operator:{tag}'
     print(f"Running Command: {push_command}")
