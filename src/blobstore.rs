@@ -34,31 +34,8 @@ fn to_id(count: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Parse a SAS token into the relevant components
-fn parse_sas(sas: &str) -> Result<(String, String, String)> {
-    let parsed = Url::parse(sas)?;
-    let account = if let Some(host) = parsed.host_str() {
-        let v: Vec<&str> = host.split_terminator('.').collect();
-        v[0]
-    } else {
-        return Err(HttpError::CouldNotParseSAS(sas.to_string()).into());
-    };
-
-    let path = parsed.path();
-    let mut v: Vec<&str> = path.split_terminator('/').collect();
-    v.remove(0);
-    let container = v.remove(0);
-    let blob_path = v.join("/");
-    Ok((account.to_string(), container.to_string(), blob_path))
-}
-
 pub async fn upload_sas(file_path: &String, sas_url: &String) -> Result<()> {
-    let (account, container, blob_name) = parse_sas(sas_url)?;
-
-    let storage_credentials = StorageCredentials::Key(account.clone(), sas_url.clone());
-    let service_client = BlobServiceClient::new(account, storage_credentials);
-    let container_client = service_client.container_client(container);
-    let blob_client = container_client.blob_client(blob_name);
+    let blob_client = BlobClient::from_sas_url(&Url::parse(sas_url)?)?;
 
     upload_with_client(&blob_client, file_path).await
 }
@@ -70,7 +47,7 @@ pub async fn upload_access_key(
     container: &String,
     blob_name: &String,
 ) -> Result<()> {
-    let storage_credentials = StorageCredentials::Key(account.clone(), access_key.clone());
+    let storage_credentials = StorageCredentials::access_key(account, access_key);
     let container_client =
         BlobServiceClient::new(account, storage_credentials).container_client(container);
 

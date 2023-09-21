@@ -1,3 +1,5 @@
+use ark_mnt4_753::MNT4_753;
+use ark_mnt6_753::MNT6_753;
 use snark_setup_operator::{data_structs::Ceremony, error::ControlError};
 
 use anyhow::Result;
@@ -785,7 +787,7 @@ async fn main() {
             .expect("Should have run command successfully"),
         Command::UnlockParticipantChunks(opts) => {
             // Make sure options are not in conflict.
-            if opts.all == opts.participant_id.is_none() {
+            if opts.all == opts.participant_id.is_some() {
                 panic!("Requires either a participant ID or the `all` option.");
             }
             control
@@ -820,6 +822,32 @@ async fn main() {
                     .await
                     .expect("Should have run command successfully");
             }
+            "mnt4_753" => {
+                control
+                    .new_round::<MNT4_753>(
+                        &opts.expected_participant,
+                        &opts.new_participant,
+                        opts.verify_transcript,
+                        !opts.do_not_send_shutdown_signal,
+                        opts.shutdown_delay_time_in_secs,
+                        opts.publish,
+                    )
+                    .await
+                    .expect("Should have run command successfully");
+            }
+            "mnt6_753" => {
+                control
+                    .new_round::<MNT6_753>(
+                        &opts.expected_participant,
+                        &opts.new_participant,
+                        opts.verify_transcript,
+                        !opts.do_not_send_shutdown_signal,
+                        opts.shutdown_delay_time_in_secs,
+                        opts.publish,
+                    )
+                    .await
+                    .expect("Should have run command successfully");
+            }
             c => panic!("Unsupported curve {}", c),
         },
         Command::ApplyBeacon(opts) => match main_opts.curve.as_str() {
@@ -832,6 +860,18 @@ async fn main() {
             "bls12_377" => {
                 control
                     .apply_beacon::<Bls12_377>(&opts.beacon_hash, &opts.expected_participant)
+                    .await
+                    .expect("Should have run command successfully");
+            }
+            "mnt4_753" => {
+                control
+                    .apply_beacon::<MNT4_753>(&opts.beacon_hash, &opts.expected_participant)
+                    .await
+                    .expect("Should have run command successfully");
+            }
+            "mnt6_753" => {
+                control
+                    .apply_beacon::<MNT6_753>(&opts.beacon_hash, &opts.expected_participant)
                     .await
                     .expect("Should have run command successfully");
             }

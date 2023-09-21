@@ -11,7 +11,7 @@ def cli(debug):
     click.echo('Debug mode is %s' % ('on' if debug else 'off'))
 
 @cli.command()  
-@click.option('--repo', default="us.gcr.io/nimiq-testnet")
+@click.option('--repo', default="us-west1-docker.pkg.dev/iron-fountain-169200/nimiq")
 @click.option('--tag', default="test")
 def release_docker(repo, tag):
     # Build and push Service

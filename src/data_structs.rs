@@ -139,7 +139,12 @@ pub struct Ceremony {
     pub chunks: Vec<Chunk>,
     pub parameters: Parameters,
     pub attestations: Option<Vec<Attestation>>,
+    #[serde(default = "phase_default")]
     pub phase: String,
+}
+
+fn phase_default() -> String {
+    "phase1".to_string()
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
