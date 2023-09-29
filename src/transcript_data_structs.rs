@@ -5,6 +5,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct Transcript {
     pub rounds: Vec<Ceremony>,
-    pub beacon_hash: Option<String>,
-    pub final_hash: Option<String>,
+    pub beacon_hash: Option<String>, // PITODO: Check that hashes are for all setups.
+    pub final_hashes: Option<Vec<String>>,
 }

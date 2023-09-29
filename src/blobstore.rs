@@ -4,7 +4,7 @@
 // Licensed under the MIT License.
 
 use crate::{
-    error::{HttpError, UtilsError},
+    error::UtilsError,
     utils::{
         MaxRetriesHandler,
         DEFAULT_CHUNK_SIZE, //DEFAULT_CHUNK_TIMEOUT_IN_SECONDS,

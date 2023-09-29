@@ -1,3 +1,5 @@
+use std::fmt::{self, Display};
+
 use anyhow::Result;
 use nimiq_keys::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
@@ -111,7 +113,8 @@ pub struct ChunkMetadata {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Chunk {
-    pub chunk_id: String,
+    pub unique_chunk_id: UniqueChunkId,
+    pub parameters: Parameters,
     pub lock_holder: Option<ParticipantId>,
     pub contributions: Vec<Contribution>,
     pub metadata: Option<ChunkMetadata>,
@@ -129,6 +132,14 @@ pub struct Parameters {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct Setup {
+    pub setup_id: usize,
+    pub chunks: Vec<Chunk>,
+    pub parameters: Parameters,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Ceremony {
     pub round: u64,
     pub version: u64,
@@ -136,8 +147,7 @@ pub struct Ceremony {
     pub shutdown_signal: bool,
     pub contributor_ids: Vec<ParticipantId>,
     pub verifier_ids: Vec<ParticipantId>,
-    pub chunks: Vec<Chunk>,
-    pub parameters: Parameters,
+    pub setups: Vec<Setup>,
     pub attestations: Option<Vec<Attestation>>,
     #[serde(default = "phase_default")]
     pub phase: String,
@@ -147,17 +157,30 @@ fn phase_default() -> String {
     "phase1".to_string()
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct UniqueChunkId {
+    pub setup_id: String,
+    pub chunk_id: String,
+}
+
+impl Display for UniqueChunkId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}-{}", self.setup_id, self.chunk_id)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkInfo {
-    pub chunk_id: String,
+    pub chunk_id: UniqueChunkId,
     pub lock_holder: Option<ParticipantId>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkDownloadInfo {
-    pub chunk_id: String,
+    pub chunk_id: UniqueChunkId,
     pub lock_holder: Option<ParticipantId>,
     pub last_response_url: Option<String>,
     pub last_challenge_url: Option<String>,
@@ -168,7 +191,7 @@ pub struct ChunkDownloadInfo {
 #[serde(rename_all = "camelCase")]
 pub struct FilteredChunks {
     pub chunks: Vec<ChunkInfo>,
-    pub locked_chunks: Vec<String>,
+    pub locked_chunks: Vec<UniqueChunkId>,
     pub parameters: Parameters,
     pub num_non_contributed: usize,
     pub num_chunks: usize,
@@ -224,7 +247,7 @@ pub struct SignedVerifiedDataParsed {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ContributionUploadUrl {
-    pub chunk_id: String,
+    pub chunk_id: UniqueChunkId,
     pub participant_id: ParticipantId,
     pub write_url: String,
 }

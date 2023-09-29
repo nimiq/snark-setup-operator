@@ -55,21 +55,24 @@ impl Monitor {
     fn check_timeout(&self, ceremony: &Ceremony) -> Result<()> {
         let current_time = chrono::Utc::now();
         let mut timed_out_participant_ids = vec![];
-        for chunk in ceremony.chunks.iter() {
-            let participant_id = match chunk.lock_holder.as_ref() {
-                Some(participant_id) => participant_id.clone(),
-                None => continue,
-            };
 
-            let lock_time = chunk
-                .metadata
-                .as_ref()
-                .ok_or(MonitorError::MetadataNoneError)?
-                .lock_holder_time
-                .ok_or(MonitorError::LockTimeIsNoneError)?;
-            let elapsed = current_time - lock_time;
-            if elapsed > self.timeout {
-                timed_out_participant_ids.push(participant_id);
+        for setup in ceremony.setups.iter() {
+            for chunk in setup.chunks.iter() {
+                let participant_id = match chunk.lock_holder.as_ref() {
+                    Some(participant_id) => participant_id.clone(),
+                    None => continue,
+                };
+
+                let lock_time = chunk
+                    .metadata
+                    .as_ref()
+                    .ok_or(MonitorError::MetadataNoneError)?
+                    .lock_holder_time
+                    .ok_or(MonitorError::LockTimeIsNoneError)?;
+                let elapsed = current_time - lock_time;
+                if elapsed > self.timeout {
+                    timed_out_participant_ids.push(participant_id);
+                }
             }
         }
         info!("timed out participants: {:?}", timed_out_participant_ids);
@@ -80,21 +83,24 @@ impl Monitor {
     fn check_all_done(&self, ceremony: &Ceremony) -> Result<()> {
         let participant_ids: HashSet<_> = ceremony.contributor_ids.iter().clone().collect();
 
-        if ceremony.chunks.iter().all(|chunk| {
-            let verified_participant_ids_in_chunk: HashSet<_> = chunk
-                .contributions
-                .iter()
-                .filter(|c| c.verified)
-                .map(|c| c.contributor_id.as_ref())
-                .filter_map(|e| e)
-                .collect();
-            participant_ids
-                .iter()
-                .all(|p| verified_participant_ids_in_chunk.contains(*p))
-        }) {
-            info!("all done");
+        for setup in ceremony.setups.iter() {
+            if setup.chunks.iter().all(|chunk| {
+                let verified_participant_ids_in_chunk: HashSet<_> = chunk
+                    .contributions
+                    .iter()
+                    .filter(|c| c.verified)
+                    .map(|c| c.contributor_id.as_ref())
+                    .filter_map(|e| e)
+                    .collect();
+                participant_ids
+                    .iter()
+                    .all(|p| verified_participant_ids_in_chunk.contains(*p))
+            }) {
+                info!("setup {:?} all done", setup.setup_id);
+            } else {
+                info!("setup {:?} not finished", setup.setup_id);
+            }
         }
-
         Ok(())
     }
 
@@ -105,27 +111,29 @@ impl Monitor {
         let mut chunks_incomplete = vec![];
         let mut participant_ids_incomplete = HashSet::new();
 
-        for chunk in ceremony.chunks.iter() {
-            let verified_participant_ids_in_chunk: HashSet<_> = chunk
-                .contributions
-                .iter()
-                .filter(|c| c.verified)
-                .map(|c| c.contributor_id.as_ref())
-                .filter_map(|e| e)
-                .collect();
-            if participant_ids
-                .iter()
-                .all(|p| verified_participant_ids_in_chunk.contains(*p))
-            {
-                chunks_complete.push(chunk.chunk_id.clone())
-            } else {
-                participant_ids
+        for setup in ceremony.setups.iter() {
+            for chunk in setup.chunks.iter() {
+                let verified_participant_ids_in_chunk: HashSet<_> = chunk
+                    .contributions
                     .iter()
-                    .filter(|x| !verified_participant_ids_in_chunk.contains(*x))
-                    .for_each(|p| {
-                        participant_ids_incomplete.insert(p);
-                    });
-                chunks_incomplete.push(chunk.chunk_id.clone())
+                    .filter(|c| c.verified)
+                    .map(|c| c.contributor_id.as_ref())
+                    .filter_map(|e| e)
+                    .collect();
+                if participant_ids
+                    .iter()
+                    .all(|p| verified_participant_ids_in_chunk.contains(*p))
+                {
+                    chunks_complete.push(chunk.unique_chunk_id.clone())
+                } else {
+                    participant_ids
+                        .iter()
+                        .filter(|x| !verified_participant_ids_in_chunk.contains(*x))
+                        .for_each(|p| {
+                            participant_ids_incomplete.insert(p);
+                        });
+                    chunks_incomplete.push(chunk.unique_chunk_id.clone())
+                }
             }
         }
 

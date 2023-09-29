@@ -5,14 +5,17 @@ use phase1::Phase1Parameters;
 use serde_json::Value;
 use snark_setup_operator::data_structs::{
     Attestation, ChunkDownloadInfo, ContributedData, ContributionUploadUrl, FilteredChunks,
-    ParticipantId, SignedData, UnlockBody, VerifiedData,
+    ParticipantId, SignedData, UniqueChunkId, UnlockBody, VerifiedData,
 };
+use snark_setup_operator::setup_filename;
 use snark_setup_operator::utils::{
     collect_processor_data, create_parameters_for_chunk, download_file_direct_async,
     download_file_from_azure_async, get_authorization_value, get_content_length,
     participation_mode_from_str, read_hash_from_file, read_keys, remove_file_if_exists, sign_json,
     upload_file_direct_async, upload_file_to_azure_async, upload_mode_from_str,
-    write_attestation_to_file, ParticipationMode, UploadMode,
+    write_attestation_to_file, ParticipationMode, UploadMode, CHALLENGE_FILENAME,
+    CHALLENGE_HASH_FILENAME, NEW_CHALLENGE_FILENAME, NEW_CHALLENGE_HASH_FILENAME,
+    RESPONSE_FILENAME, RESPONSE_HASH_FILENAME,
 };
 use snark_setup_operator::{data_structs::Response, error::ContributeError};
 
@@ -48,13 +51,6 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
-const CHALLENGE_FILENAME: &str = "challenge";
-const CHALLENGE_HASH_FILENAME: &str = "challenge.hash";
-const RESPONSE_FILENAME: &str = "response";
-const RESPONSE_HASH_FILENAME: &str = "response.hash";
-const NEW_CHALLENGE_FILENAME: &str = "new_challenge";
-const NEW_CHALLENGE_HASH_FILENAME: &str = "new_challenge.hash";
-
 const DELAY_AFTER_ERROR_DURATION_SECS: i64 = 60;
 const DELAY_WAIT_FOR_PIPELINE_SECS: i64 = 5;
 const DELAY_POLL_CEREMONY_SECS: i64 = 5;
@@ -62,7 +58,7 @@ const DELAY_STATUS_UPDATE_FORCE_SECS: i64 = 300;
 const DELAY_AFTER_ATTESTATION_ERROR_DURATION_SECS: i64 = 5;
 
 lazy_static! {
-    static ref PIPELINE: RwLock<HashMap<PipelineLane, Vec<String>>> = {
+    static ref PIPELINE: RwLock<HashMap<PipelineLane, Vec<UniqueChunkId>>> = {
         let mut map = HashMap::new();
         map.insert(PipelineLane::Download, Vec::new());
         map.insert(PipelineLane::Process, Vec::new());
@@ -195,7 +191,7 @@ pub struct Contribute {
     pub attestation: Attestation,
 
     // This is the only mutable state we hold.
-    pub chosen_chunk_id: Option<String>,
+    pub chosen_chunk_id: Option<UniqueChunkId>,
 }
 
 impl Contribute {
@@ -216,12 +212,19 @@ impl Contribute {
             max_in_download_lane: opts.max_in_download_lane,
             max_in_process_lane: opts.max_in_process_lane,
             max_in_upload_lane: opts.max_in_upload_lane,
-            challenge_filename: CHALLENGE_FILENAME.to_string(),
-            challenge_hash_filename: CHALLENGE_HASH_FILENAME.to_string(),
-            response_filename: RESPONSE_FILENAME.to_string(),
-            response_hash_filename: RESPONSE_HASH_FILENAME.to_string(),
-            new_challenge_filename: NEW_CHALLENGE_FILENAME.to_string(),
-            new_challenge_hash_filename: NEW_CHALLENGE_HASH_FILENAME.to_string(),
+            challenge_filename: setup_filename!(CHALLENGE_FILENAME, setup.setup_id).to_string(),
+            challenge_hash_filename: setup_filename!(CHALLENGE_HASH_FILENAME, setup.setup_id)
+                .to_string(),
+            response_filename: setup_filename!(RESPONSE_FILENAME, setup.setup_id).to_string(),
+            response_hash_filename: setup_filename!(RESPONSE_HASH_FILENAME, setup.setup_id)
+                .to_string(),
+            new_challenge_filename: setup_filename!(NEW_CHALLENGE_FILENAME, setup.setup_id)
+                .to_string(),
+            new_challenge_hash_filename: setup_filename!(
+                NEW_CHALLENGE_HASH_FILENAME,
+                setup.setup_id
+            )
+            .to_string(),
             disable_pipelining: opts.disable_pipelining,
             force_correctness_checks: opts.force_correctness_checks,
             batch_exp_mode: opts.batch_exp_mode,
@@ -365,7 +368,7 @@ impl Contribute {
                         warn!("Cannot get locked chunks {}", err);
                     }
                     Ok(ceremony) => {
-                        let mut found: Vec<String> = vec![];
+                        let mut found: Vec<UniqueChunkId> = vec![];
                         let v = match cloned_for_update.get_participant_locked_chunk_ids() {
                             Ok(lst) => lst,
                             Err(err) => {
@@ -482,7 +485,7 @@ impl Contribute {
         }
     }
 
-    fn get_pipeline_snapshot(&self) -> Result<HashMap<PipelineLane, Vec<String>>> {
+    fn get_pipeline_snapshot(&self) -> Result<HashMap<PipelineLane, Vec<UniqueChunkId>>> {
         let pipeline = PIPELINE
             .read()
             .expect("Should have opened pipeline for reading");
@@ -537,8 +540,8 @@ impl Contribute {
         Ok(false)
     }
 
-    fn choose_chunk_id(&self, ceremony: &FilteredChunks) -> Result<String> {
-        let chunk_ids_from_pipeline: HashSet<String> = {
+    fn choose_chunk_id(&self, ceremony: &FilteredChunks) -> Result<UniqueChunkId> {
+        let chunk_ids_from_pipeline: HashSet<UniqueChunkId> = {
             let mut chunk_ids = vec![];
             let pipeline = self.get_pipeline_snapshot()?;
             for lane in &[
@@ -555,7 +558,7 @@ impl Contribute {
             }
             chunk_ids.into_iter().collect()
         };
-        let locked_chunk_ids_from_ceremony: HashSet<String> = {
+        let locked_chunk_ids_from_ceremony: HashSet<UniqueChunkId> = {
             ceremony
                 .chunks
                 .iter()
@@ -576,7 +579,7 @@ impl Contribute {
             .clone())
     }
 
-    fn add_chunk_id_to_download_lane(&self, chunk_id: &str) -> Result<bool> {
+    fn add_chunk_id_to_download_lane(&self, chunk_id: &UniqueChunkId) -> Result<bool> {
         let lane = &PipelineLane::Download;
         let max_in_lane = match *lane {
             PipelineLane::Download => self.max_in_download_lane,
@@ -590,10 +593,10 @@ impl Contribute {
         let lane_list = pipeline
             .get_mut(lane)
             .ok_or(ContributeError::LaneWasNullError(lane.to_string()))?;
-        if lane_list.contains(&chunk_id.to_string()) || lane_list.len() >= max_in_lane {
+        if lane_list.contains(&chunk_id) || lane_list.len() >= max_in_lane {
             return Ok(false);
         }
-        lane_list.push(chunk_id.to_string());
+        lane_list.push(chunk_id.clone());
         debug!(
             "Chunk ID {} added successfully to lane {}. Current pipeline is: {:?}",
             chunk_id,
@@ -606,7 +609,7 @@ impl Contribute {
     fn remove_chunk_id_from_lane_if_exists(
         &self,
         lane: &PipelineLane,
-        chunk_id: &str,
+        chunk_id: &UniqueChunkId,
     ) -> Result<bool> {
         let mut pipeline = PIPELINE
             .write()
@@ -615,10 +618,10 @@ impl Contribute {
         let lane_list = pipeline
             .get_mut(lane)
             .ok_or(ContributeError::LaneWasNullError(lane.to_string()))?;
-        if !lane_list.contains(&chunk_id.to_string()) {
+        if !lane_list.contains(&chunk_id) {
             return Ok(false);
         }
-        lane_list.retain(|c| c.as_str() != chunk_id);
+        lane_list.retain(|c| c != chunk_id);
         debug!(
             "Chunk ID {} removed successfully from lane {}. Current pipeline is: {:?}",
             chunk_id,
@@ -632,7 +635,7 @@ impl Contribute {
         &self,
         from: &PipelineLane,
         to: &PipelineLane,
-        chunk_id: &str,
+        chunk_id: &UniqueChunkId,
     ) -> Result<bool> {
         let max_in_lane = match *to {
             PipelineLane::Download => self.max_in_download_lane,
@@ -657,14 +660,14 @@ impl Contribute {
                 let from_list = pipeline
                     .get_mut(from)
                     .ok_or(ContributeError::LaneWasNullError(from.to_string()))?;
-                if !from_list.contains(&chunk_id.to_string()) {
+                if !from_list.contains(&chunk_id) {
                     return Err(ContributeError::LaneDidNotContainChunkWithIDError(
                         from.to_string(),
                         chunk_id.to_string(),
                     )
                     .into());
                 }
-                from_list.retain(|c| c.as_str() != chunk_id);
+                from_list.retain(|c| c != chunk_id);
             }
 
             {
@@ -672,14 +675,14 @@ impl Contribute {
                     .get_mut(to)
                     .ok_or(ContributeError::LaneWasNullError(to.to_string()))?;
 
-                if to_list.contains(&chunk_id.to_string()) {
+                if to_list.contains(&chunk_id) {
                     return Err(ContributeError::LaneAlreadyContainsChunkWithIDError(
                         to.to_string(),
                         chunk_id.to_string(),
                     )
                     .into());
                 }
-                to_list.push(chunk_id.to_string());
+                to_list.push(chunk_id.clone());
             }
             debug!(
                 "Chunk ID {} moved successfully from lane {} to lane {}. Current pipeline is: {:?}",
@@ -696,7 +699,7 @@ impl Contribute {
         &self,
         from: &PipelineLane,
         to: &PipelineLane,
-        chunk_id: &str,
+        chunk_id: &UniqueChunkId,
     ) -> Result<()> {
         loop {
             if EXITING.load(SeqCst) {
@@ -721,7 +724,7 @@ impl Contribute {
     async fn contribute<P: Pairing>(
         &self,
         chunk: &ChunkDownloadInfo,
-        chunk_id: &str,
+        chunk_id: &UniqueChunkId,
         phase: Phase,
         parameters: Phase1Parameters<P>,
     ) -> Result<(&String, Value)> {
@@ -855,7 +858,7 @@ impl Contribute {
     async fn verify<P: Pairing>(
         &self,
         chunk: &ChunkDownloadInfo,
-        chunk_id: &str,
+        chunk_id: &UniqueChunkId,
         phase: Phase,
         parameters: Phase1Parameters<P>,
     ) -> Result<(&String, Value)> {
@@ -1044,7 +1047,7 @@ impl Contribute {
             if !self.add_chunk_id_to_download_lane(&chunk_id)? {
                 continue;
             }
-            self.chosen_chunk_id = Some(chunk_id.to_string());
+            self.chosen_chunk_id = Some(chunk_id.clone());
             self.lock_chunk(&chunk_id).await?;
             self.set_status_update_signal();
 
@@ -1175,7 +1178,7 @@ impl Contribute {
         }
     }
 
-    fn get_participant_locked_chunks(&self) -> Result<Vec<(String, PipelineLane)>> {
+    fn get_participant_locked_chunks(&self) -> Result<Vec<(UniqueChunkId, PipelineLane)>> {
         let mut chunk_ids = vec![];
         let pipeline = self.get_pipeline_snapshot()?;
         for lane in &[
@@ -1197,11 +1200,11 @@ impl Contribute {
         Ok(self
             .get_participant_locked_chunks()?
             .iter()
-            .map(|(id, lane)| format!("{} ({})", id, lane))
+            .map(|(chunk_id, lane)| format!("{} ({})", chunk_id, lane))
             .collect())
     }
 
-    fn get_participant_locked_chunk_ids(&self) -> Result<Vec<String>> {
+    fn get_participant_locked_chunk_ids(&self) -> Result<Vec<UniqueChunkId>> {
         Ok(self
             .get_participant_locked_chunks()?
             .iter()
@@ -1219,7 +1222,7 @@ impl Contribute {
     fn get_non_contributed_and_available_chunks(
         &self,
         ceremony: &FilteredChunks,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<UniqueChunkId>> {
         let mut non_contributed = vec![];
 
         for chunk in ceremony.chunks.iter() {
@@ -1255,7 +1258,10 @@ impl Contribute {
         Ok(url)
     }
 
-    async fn get_chunk_download_info(&self, chunk_id: &str) -> Result<(usize, ChunkDownloadInfo)> {
+    async fn get_chunk_download_info(
+        &self,
+        chunk_id: &UniqueChunkId,
+    ) -> Result<(usize, ChunkDownloadInfo)> {
         let get_path = format!("chunks/{}/info", chunk_id);
         let get_chunk_url = self.server_url.join(&get_path)?;
         let client = reqwest::Client::new();
@@ -1268,7 +1274,7 @@ impl Contribute {
         let data = response.text().await?;
         let chunk: ChunkDownloadInfo =
             serde_json::from_str::<Response<ChunkDownloadInfo>>(&data)?.result;
-        Ok((chunk_id.parse::<usize>()?, chunk))
+        Ok((chunk_id.chunk_id.parse::<usize>()?, chunk))
     }
 
     async fn get_chunk_info(&self) -> Result<FilteredChunks> {
@@ -1290,7 +1296,7 @@ impl Contribute {
         Ok(ceremony)
     }
 
-    async fn lock_chunk(&self, chunk_id: &str) -> Result<()> {
+    async fn lock_chunk(&self, chunk_id: &UniqueChunkId) -> Result<()> {
         let lock_path = format!("chunks/{}/lock", chunk_id);
         let lock_chunk_url = self.server_url.join(&lock_path)?;
         let client = reqwest::Client::new();
@@ -1305,7 +1311,7 @@ impl Contribute {
         Ok(())
     }
 
-    async fn unlock_chunk(&self, chunk_id: &str, error: Option<String>) -> Result<()> {
+    async fn unlock_chunk(&self, chunk_id: &UniqueChunkId, error: Option<String>) -> Result<()> {
         let unlock_path = format!("chunks/{}/unlock", chunk_id);
         let unlock_chunk_url = self.server_url.join(&unlock_path)?;
         let client = reqwest::Client::new();
@@ -1320,7 +1326,7 @@ impl Contribute {
         Ok(())
     }
 
-    async fn get_upload_url(&self, chunk_id: &str) -> Result<String> {
+    async fn get_upload_url(&self, chunk_id: &UniqueChunkId) -> Result<String> {
         let upload_request_path = format!("chunks/{}/contribution", chunk_id);
         let upload_request_url = self.server_url.join(&upload_request_path)?;
         let client = reqwest::Client::new();
@@ -1337,7 +1343,11 @@ impl Contribute {
         Ok(response.result.write_url)
     }
 
-    async fn notify_contribution(&self, chunk_id: &str, body: serde_json::Value) -> Result<()> {
+    async fn notify_contribution(
+        &self,
+        chunk_id: &UniqueChunkId,
+        body: serde_json::Value,
+    ) -> Result<()> {
         let notify_path = format!("chunks/{}/contribution", chunk_id);
         let notify_url = self.server_url.join(&notify_path)?;
         let client = reqwest::Client::new();

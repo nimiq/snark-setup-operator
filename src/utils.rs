@@ -29,6 +29,39 @@ use std::{
 };
 use tracing::warn;
 
+pub const PHASE2_FILENAME: &str = "phase2_init";
+pub const COMBINED_FILENAME: &str = "combined";
+pub const RESPONSE_FILENAME: &str = "response";
+pub const RESPONSE_PREFIX_FOR_AGGREGATION: &str = "response";
+pub const RESPONSE_LIST_FILENAME: &str = "response_list";
+pub const COMBINED_HASH_FILENAME: &str = "combined.hash";
+pub const COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME: &str =
+    "combined_verified_pok_and_correctness";
+pub const COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME: &str =
+    "combined_verified_pok_and_correctness.hash";
+pub const COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME: &str =
+    "combined_new_verified_pok_and_correctness_new_challenge";
+pub const COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME: &str =
+    "combined_verified_pok_and_correctness_new_challenge.hash";
+pub const NEW_CHALLENGE_FILENAME: &str = "new_challenge";
+pub const NEW_CHALLENGE_HASH_FILENAME: &str = "new_challenge.hash";
+pub const INITIAL_CHALLENGE_FILENAME: &str = "initial_challenge";
+pub const INITIAL_CHALLENGE_HASH_FILENAME: &str = "initial_challenge.hash";
+pub const COMBINED_NEW_CHALLENGE_FILENAME: &str = "combined_new_challenge";
+pub const COMBINED_NEW_CHALLENGE_HASH_FILENAME: &str = "combined_new_challenge.hash";
+pub const NEW_CHALLENGE_LIST_FILENAME: &str = "new_challenge_list";
+pub const CHALLENGE_FILENAME: &str = "challenge";
+pub const CHALLENGE_HASH_FILENAME: &str = "challenge.hash";
+pub const RESPONSE_HASH_FILENAME: &str = "response.hash";
+pub const NEW_CHALLENGE_PREFIX_FOR_NEXT_ROUND: &str = "new_challenge";
+
+#[macro_export]
+macro_rules! setup_filename {
+    ($file_name:expr, $setup_id:expr) => {
+        &format!("setup{}_{}", $setup_id, $file_name)
+    };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Phase {
     Phase1,
@@ -495,7 +528,7 @@ pub fn load_transcript() -> Result<Transcript> {
             serde_json::to_string_pretty(&Transcript {
                 rounds: vec![],
                 beacon_hash: None,
-                final_hash: None,
+                final_hashes: None,
             })?
             .as_bytes(),
         )?;

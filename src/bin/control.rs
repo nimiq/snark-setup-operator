@@ -1,5 +1,6 @@
 use ark_mnt4_753::MNT4_753;
 use ark_mnt6_753::MNT6_753;
+use snark_setup_operator::setup_filename;
 use snark_setup_operator::{data_structs::Ceremony, error::ControlError};
 
 use anyhow::Result;
@@ -19,14 +20,22 @@ use setup_utils::{
     DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS, DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
 };
 use snark_setup_operator::data_structs::{
-    Chunk, ChunkMetadata, Contribution, ContributionMetadata, ParticipantId,
+    Chunk, ChunkMetadata, Contribution, ContributionMetadata, ParticipantId, Setup,
 };
 use snark_setup_operator::error::{NewRoundError, VerifyTranscriptError};
 use snark_setup_operator::utils::{
     backup_transcript, create_full_parameters, create_parameters_for_chunk,
     download_file_from_azure_async, get_authorization_value, get_ceremony, get_content_length,
     load_transcript, read_hash_from_file, read_keys, remove_file_if_exists, save_transcript,
-    string_to_phase, Phase, BEACON_HASH_LENGTH,
+    string_to_phase, Phase, BEACON_HASH_LENGTH, COMBINED_FILENAME, COMBINED_HASH_FILENAME,
+    COMBINED_NEW_CHALLENGE_FILENAME, COMBINED_NEW_CHALLENGE_HASH_FILENAME,
+    COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+    COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+    COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+    COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME, INITIAL_CHALLENGE_FILENAME,
+    INITIAL_CHALLENGE_HASH_FILENAME, NEW_CHALLENGE_FILENAME, NEW_CHALLENGE_HASH_FILENAME,
+    NEW_CHALLENGE_LIST_FILENAME, RESPONSE_FILENAME, RESPONSE_LIST_FILENAME,
+    RESPONSE_PREFIX_FOR_AGGREGATION,
 };
 use std::{
     collections::HashSet,
@@ -36,27 +45,6 @@ use std::{
 };
 use tracing::info;
 use url::Url;
-
-const RESPONSE_FILENAME: &str = "response";
-const RESPONSE_PREFIX_FOR_AGGREGATION: &str = "response";
-const RESPONSE_LIST_FILENAME: &str = "response_list";
-const COMBINED_FILENAME: &str = "combined";
-const COMBINED_HASH_FILENAME: &str = "combined.hash";
-const COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME: &str =
-    "combined_verified_pok_and_correctness";
-const COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME: &str =
-    "combined_verified_pok_and_correctness.hash";
-const COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME: &str =
-    "combined_new_verified_pok_and_correctness_new_challenge";
-const COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME: &str =
-    "combined_verified_pok_and_correctness_new_challenge.hash";
-const NEW_CHALLENGE_FILENAME: &str = "new_challenge";
-const NEW_CHALLENGE_HASH_FILENAME: &str = "new_challenge.hash";
-const INITIAL_CHALLENGE_FILENAME: &str = "initial_challenge";
-const INITIAL_CHALLENGE_HASH_FILENAME: &str = "initial_challenge.hash";
-const COMBINED_NEW_CHALLENGE_FILENAME: &str = "combined_new_challenge";
-const COMBINED_NEW_CHALLENGE_HASH_FILENAME: &str = "combined_new_challenge.hash";
-const NEW_CHALLENGE_LIST_FILENAME: &str = "new_challenge_list";
 
 #[derive(Debug, Options, Clone)]
 pub struct AddParticipantOpts {
@@ -119,6 +107,8 @@ pub struct RemoveLastContributionOpts {
     help: bool,
     #[options(help = "expected participant ID")]
     pub participant_id: ParticipantId,
+    #[options(help = "setup index")]
+    pub setup_index: usize,
     #[options(help = "chunk index")]
     pub chunk_index: usize,
 }
@@ -161,7 +151,7 @@ pub struct ControlOpts {
     pub initial_full_filename: Option<String>,
 }
 
-pub struct Phase2Opts {
+pub struct Phase2Params {
     pub chunk_size: usize,
     pub phase1_powers: usize,
     pub phase1_filename: String,
@@ -170,43 +160,51 @@ pub struct Phase2Opts {
     pub initial_full_filename: String,
 }
 
+pub struct Phase2Opts {
+    pub setups: Vec<Phase2Params>,
+}
+
 impl Phase2Opts {
     pub async fn new(opts: &ControlOpts) -> Result<Self> {
         let server_url = Url::parse(&opts.coordinator_url)?.join("ceremony")?;
         let ceremony = get_ceremony(&server_url.as_str()).await?;
 
-        let chunk_size = match opts.chunk_size {
-            Some(size) => 1 << size,
-            _ => ceremony.parameters.chunk_size,
-        };
-        let powers = match opts.phase1_powers {
-            Some(powers) => powers,
-            _ => ceremony.parameters.power,
-        };
-        Ok(Self {
-            chunk_size: chunk_size,
-            phase1_powers: powers,
-            phase1_filename: opts
-                .phase1_filename
-                .as_ref()
-                .expect("phase1_filename must be used when running phase2")
-                .to_string(),
-            circuit_filename: opts
-                .circuit_filename
-                .as_ref()
-                .expect("circuit_filename must be used when running phase2")
-                .to_string(),
-            initial_query_filename: opts
-                .initial_query_filename
-                .as_ref()
-                .expect("initial_query_filename needed when running phase2")
-                .to_string(),
-            initial_full_filename: opts
-                .initial_full_filename
-                .as_ref()
-                .expect("initial_full_filename needed when running phase2")
-                .to_string(),
-        })
+        let mut setups = vec![];
+        for setup in ceremony.setups {
+            let chunk_size = match opts.chunk_size {
+                Some(size) => 1 << size,
+                _ => setup.parameters.chunk_size,
+            };
+            let powers = match opts.phase1_powers {
+                Some(powers) => powers,
+                _ => setup.parameters.power,
+            };
+            setups.push(Phase2Params {
+                chunk_size,
+                phase1_powers: powers,
+                phase1_filename: opts
+                    .phase1_filename
+                    .as_ref()
+                    .expect("phase1_filename must be used when running phase2")
+                    .to_string(),
+                circuit_filename: opts
+                    .circuit_filename
+                    .as_ref()
+                    .expect("circuit_filename must be used when running phase2")
+                    .to_string(),
+                initial_query_filename: opts
+                    .initial_query_filename
+                    .as_ref()
+                    .expect("initial_query_filename needed when running phase2")
+                    .to_string(),
+                initial_full_filename: opts
+                    .initial_full_filename
+                    .as_ref()
+                    .expect("initial_full_filename needed when running phase2")
+                    .to_string(),
+            });
+        }
+        Ok(Self { setups })
     }
 }
 
@@ -256,10 +254,10 @@ impl Control {
 
         let private_key = KeyPair::from(PrivateKey::from_bytes(private_key)?);
         let control = Self {
-            phase: phase,
-            server_url: server_url,
+            phase,
+            server_url,
             private_key,
-            phase2_opts: phase2_opts,
+            phase2_opts,
         };
         Ok(control)
     }
@@ -331,32 +329,34 @@ impl Control {
             .into());
         }
         ceremony.contributor_ids.retain(|x| *x != participant_id);
-        for (chunk_index, chunk) in ceremony.chunks.iter_mut().enumerate() {
-            // If the participant is currently holding the lock, release it and continue.
-            if chunk.lock_holder == Some(participant_id) {
-                info!(
-                    "chunk {} is locked by the participant, releasing it",
-                    chunk_index
-                );
-                chunk.lock_holder = None;
-                continue;
-            }
-            // Otherwise, check if they contributed in the past and clean it up.
-            let mut contribution_index = None;
-            for (index, contribution) in chunk.contributions.iter().enumerate() {
-                // The first contribution is always the result of initialization, so no need to process it.
-                if index == 0 {
+        for setup in ceremony.setups.iter_mut() {
+            for chunk in setup.chunks.iter_mut() {
+                // If the participant is currently holding the lock, release it and continue.
+                if chunk.lock_holder == Some(participant_id) {
+                    info!(
+                        "chunk {} is locked by the participant, releasing it",
+                        chunk.unique_chunk_id
+                    );
+                    chunk.lock_holder = None;
                     continue;
                 }
-                if contribution.contributor_id()? == participant_id {
-                    contribution_index = Some(index);
-                    break;
+                // Otherwise, check if they contributed in the past and clean it up.
+                let mut contribution_index = None;
+                for (index, contribution) in chunk.contributions.iter().enumerate() {
+                    // The first contribution is always the result of initialization, so no need to process it.
+                    if index == 0 {
+                        continue;
+                    }
+                    if contribution.contributor_id()? == participant_id {
+                        contribution_index = Some(index);
+                        break;
+                    }
                 }
-            }
-            if let Some(contribution_index) = contribution_index {
-                info!("chunk {} has a contribution from the participant at index {}, deleting it and its descendants", chunk_index, contribution_index);
-                chunk.lock_holder = None;
-                chunk.contributions.drain(contribution_index..);
+                if let Some(contribution_index) = contribution_index {
+                    info!("chunk {} has a contribution from the participant at index {}, deleting it and its descendants", chunk.unique_chunk_id, contribution_index);
+                    chunk.lock_holder = None;
+                    chunk.contributions.drain(contribution_index..);
+                }
             }
         }
         self.put_ceremony(&ceremony).await?;
@@ -374,15 +374,17 @@ impl Control {
             .into());
         }
         ceremony.verifier_ids.retain(|x| *x != participant_id);
-        for (chunk_index, chunk) in ceremony.chunks.iter_mut().enumerate() {
-            // If the verifier is currently holding the lock, release it and continue.
-            if chunk.lock_holder == Some(participant_id) {
-                info!(
-                    "chunk {} is locked by the participant, releasing it",
-                    chunk_index
-                );
-                chunk.lock_holder = None;
-                continue;
+        for setup in ceremony.setups.iter_mut() {
+            for chunk in setup.chunks.iter_mut() {
+                // If the verifier is currently holding the lock, release it and continue.
+                if chunk.lock_holder == Some(participant_id) {
+                    info!(
+                        "chunk {} is locked by the participant, releasing it",
+                        chunk.unique_chunk_id
+                    );
+                    chunk.lock_holder = None;
+                    continue;
+                }
             }
         }
         self.put_ceremony(&ceremony).await?;
@@ -393,72 +395,91 @@ impl Control {
     async fn unlock_participant(&self, participant_id: Option<ParticipantId>) -> Result<()> {
         let mut ceremony = self.get_ceremony().await?;
         let chunk_ids = ceremony
-            .chunks
+            .setups
             .iter_mut()
-            .map(|c| {
-                if participant_id.is_none() || c.lock_holder == participant_id {
-                    c.lock_holder = None;
-                    Some(c.chunk_id.clone())
-                } else {
-                    None
-                }
+            .map(|setup| {
+                setup.chunks.iter_mut().filter_map(|c| {
+                    if participant_id.is_none() || c.lock_holder == participant_id {
+                        c.lock_holder = None;
+                        Some(c.unique_chunk_id.clone())
+                    } else {
+                        None
+                    }
+                })
             })
-            .filter_map(|e| e)
             .collect::<Vec<_>>();
         info!("chunk IDs unlocked: {:?}", chunk_ids);
         self.put_ceremony(&ceremony).await?;
         Ok(())
     }
 
-    async fn combine_and_verify_round<E: Pairing>(&self, ceremony: &Ceremony) -> Result<()> {
-        let mut response_list_file = File::create(RESPONSE_LIST_FILENAME)?;
+    async fn combine_and_verify_round<E: Pairing>(
+        &self,
+        ceremony: &Ceremony,
+        setup: &Setup,
+    ) -> Result<()> {
+        let mut response_list_file =
+            File::create(setup_filename!(RESPONSE_LIST_FILENAME, setup.setup_id))?;
         info!("Verifying round {}", ceremony.round);
-        for (chunk_index, contribution) in ceremony
-            .chunks
-            .iter()
-            .enumerate()
-            .map(|(chunk_index, chunk)| (chunk_index, chunk.contributions.iter().last().unwrap()))
-        {
-            remove_file_if_exists(RESPONSE_FILENAME)?;
+
+        for (unique_chunk_id, contribution) in setup.chunks.iter().map(|chunk| {
+            (
+                chunk.unique_chunk_id.clone(),
+                chunk.contributions.iter().last().unwrap(),
+            )
+        }) {
+            remove_file_if_exists(setup_filename!(RESPONSE_FILENAME, setup.setup_id))?;
             let contributed_location = contribution.contributed_location()?;
-            info!("Downloading chunk {}", chunk_index);
+            info!("Downloading chunk {}", unique_chunk_id);
             download_file_from_azure_async(
                 &contributed_location,
                 get_content_length(&contributed_location).await?,
-                RESPONSE_FILENAME,
+                setup_filename!(RESPONSE_FILENAME, setup.setup_id),
             )
             .await?;
-            info!("Downloaded chunk {}", chunk_index);
-            let response_filename = format!("{}_{}", RESPONSE_PREFIX_FOR_AGGREGATION, chunk_index);
-            copy(RESPONSE_FILENAME, &response_filename)?;
+            info!("Downloaded chunk {}", unique_chunk_id);
+            let response_filename = format!(
+                "{}_{}",
+                setup_filename!(RESPONSE_PREFIX_FOR_AGGREGATION, setup.setup_id),
+                unique_chunk_id
+            );
+            copy(
+                setup_filename!(RESPONSE_FILENAME, setup.setup_id),
+                &response_filename,
+            )?;
             response_list_file.write(format!("{}\n", response_filename).as_bytes())?;
         }
+
         drop(response_list_file);
-        remove_file_if_exists(COMBINED_FILENAME)?;
-        let parameters = create_parameters_for_chunk::<E>(&ceremony.parameters, 0)?;
+        remove_file_if_exists(setup_filename!(COMBINED_FILENAME, setup.setup_id))?;
+        let parameters = create_parameters_for_chunk::<E>(&setup.parameters, 0)?;
         info!("Combining");
         if self.phase == Phase::Phase1 {
-            phase1_cli::combine(RESPONSE_LIST_FILENAME, COMBINED_FILENAME, &parameters);
+            phase1_cli::combine(
+                setup_filename!(RESPONSE_LIST_FILENAME, setup.setup_id),
+                setup_filename!(COMBINED_FILENAME, setup.setup_id),
+                &parameters,
+            );
         } else {
             let phase2_opts = self
                 .phase2_opts
                 .as_ref()
                 .expect("Phase 2 opts not found when running phase 2");
             phase2_cli::combine(
-                &phase2_opts.initial_query_filename,
-                &phase2_opts.initial_full_filename,
-                RESPONSE_LIST_FILENAME,
-                COMBINED_FILENAME,
+                &phase2_opts.setups[setup.setup_id].initial_query_filename,
+                &phase2_opts.setups[setup.setup_id].initial_full_filename,
+                setup_filename!(RESPONSE_LIST_FILENAME, setup.setup_id),
+                setup_filename!(COMBINED_FILENAME, setup.setup_id),
                 false,
             );
         }
         info!("Finished combining");
-        let parameters = create_full_parameters::<E>(&ceremony.parameters)?;
-        remove_file_if_exists(COMBINED_HASH_FILENAME)?;
+        let parameters = create_full_parameters::<E>(&setup.parameters)?;
+        remove_file_if_exists(setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id))?;
         info!("Verifying round {}", ceremony.round);
         if self.phase == Phase::Phase1 {
             phase1_cli::transform_ratios(
-                COMBINED_FILENAME,
+                setup_filename!(COMBINED_FILENAME, setup.setup_id),
                 DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
                 &parameters,
             );
@@ -467,40 +488,57 @@ impl Control {
                 .phase2_opts
                 .as_ref()
                 .expect("phase 2 options not found running phase 2");
-            remove_file_if_exists(NEW_CHALLENGE_LIST_FILENAME)?;
-            remove_file_if_exists(INITIAL_CHALLENGE_FILENAME)?;
-            remove_file_if_exists(INITIAL_CHALLENGE_HASH_FILENAME)?;
-            remove_file_if_exists(COMBINED_NEW_CHALLENGE_FILENAME)?;
-            remove_file_if_exists(COMBINED_NEW_CHALLENGE_HASH_FILENAME)?;
+            remove_file_if_exists(setup_filename!(NEW_CHALLENGE_LIST_FILENAME, setup.setup_id))?;
+            remove_file_if_exists(setup_filename!(
+                setup_filename!(INITIAL_CHALLENGE_FILENAME, setup.setup_id),
+                setup.setup_id
+            ))?;
+            remove_file_if_exists(setup_filename!(
+                INITIAL_CHALLENGE_HASH_FILENAME,
+                setup.setup_id
+            ))?;
+            remove_file_if_exists(setup_filename!(
+                COMBINED_NEW_CHALLENGE_FILENAME,
+                setup.setup_id
+            ))?;
+            remove_file_if_exists(setup_filename!(
+                COMBINED_NEW_CHALLENGE_HASH_FILENAME,
+                setup.setup_id
+            ))?;
             phase2_cli::new_challenge(
-                NEW_CHALLENGE_FILENAME,
-                NEW_CHALLENGE_HASH_FILENAME,
-                NEW_CHALLENGE_LIST_FILENAME,
-                phase2_opts.chunk_size,
-                &phase2_opts.phase1_filename,
-                phase2_opts.phase1_powers,
-                &phase2_opts.circuit_filename,
+                setup_filename!(NEW_CHALLENGE_FILENAME, setup.setup_id),
+                setup_filename!(NEW_CHALLENGE_HASH_FILENAME, setup.setup_id),
+                setup_filename!(NEW_CHALLENGE_LIST_FILENAME, setup.setup_id),
+                phase2_opts.setups[setup.setup_id].chunk_size,
+                &phase2_opts.setups[setup.setup_id].phase1_filename,
+                phase2_opts.setups[setup.setup_id].phase1_powers,
+                &phase2_opts.setups[setup.setup_id].circuit_filename,
             );
             phase2_cli::combine(
-                phase2_opts.initial_query_filename.as_ref(),
-                phase2_opts.initial_full_filename.as_ref(),
-                NEW_CHALLENGE_LIST_FILENAME,
-                INITIAL_CHALLENGE_FILENAME,
+                phase2_opts.setups[setup.setup_id]
+                    .initial_query_filename
+                    .as_ref(),
+                phase2_opts.setups[setup.setup_id]
+                    .initial_full_filename
+                    .as_ref(),
+                setup_filename!(NEW_CHALLENGE_LIST_FILENAME, setup.setup_id),
+                setup_filename!(INITIAL_CHALLENGE_FILENAME, setup.setup_id),
                 true,
             );
             phase2_cli::verify(
-                INITIAL_CHALLENGE_FILENAME,
-                INITIAL_CHALLENGE_HASH_FILENAME,
+                setup_filename!(INITIAL_CHALLENGE_FILENAME, setup.setup_id),
+                setup_filename!(INITIAL_CHALLENGE_HASH_FILENAME, setup.setup_id),
                 DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                COMBINED_FILENAME,
-                COMBINED_HASH_FILENAME,
+                setup_filename!(COMBINED_FILENAME, setup.setup_id),
+                setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
                 DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
-                COMBINED_NEW_CHALLENGE_FILENAME,
-                COMBINED_NEW_CHALLENGE_HASH_FILENAME,
+                setup_filename!(COMBINED_NEW_CHALLENGE_FILENAME, setup.setup_id),
+                setup_filename!(COMBINED_NEW_CHALLENGE_HASH_FILENAME, setup.setup_id),
                 SubgroupCheckMode::Auto,
                 true,
             );
         }
+
         info!("Verified round {}", ceremony.round);
 
         Ok(())
@@ -540,16 +578,18 @@ impl Control {
         transcript.rounds.push(ceremony.clone());
         if verify_transcript {
             info!("Verifying transcript");
-            self.combine_and_verify_round::<E>(&ceremony).await?;
+            for setup in ceremony.setups.iter() {
+                self.combine_and_verify_round::<E>(&ceremony, setup).await?;
+            }
             info!("Verified transcript");
         }
-        let new_chunks = ceremony
-            .chunks
-            .iter()
-            .map(|c| {
+        for setup in ceremony.setups.iter_mut() {
+            for i in 0..setup.chunks.len() {
+                let c = &setup.chunks[i];
                 let last_contribution = c.contributions.iter().last().unwrap();
-                Chunk {
-                    chunk_id: c.chunk_id.clone(),
+                setup.chunks[i] = Chunk {
+                    unique_chunk_id: c.unique_chunk_id.clone(),
+                    parameters: c.parameters.clone(),
                     lock_holder: None,
                     metadata: Some(ChunkMetadata {
                         lock_holder_time: None,
@@ -570,10 +610,10 @@ impl Control {
                         contributed_data: None,
                     }],
                 }
-            })
-            .collect::<Vec<_>>();
+            }
+        }
+
         ceremony.round += 1;
-        ceremony.chunks = new_chunks;
         ceremony.contributor_ids = new_participants.to_vec();
 
         if publish {
@@ -623,81 +663,139 @@ impl Control {
             )
             .into());
         }
+        let mut final_hashes = vec![];
+        for setup in ceremony.setups.iter() {
+            // Generate combined file from transcript
+            // Verify result if running phase 1
+            self.combine_and_verify_round::<E>(&ceremony, setup).await?;
 
-        // Generate combined file from transcript
-        // Verify result if running phase 1
-        self.combine_and_verify_round::<E>(&ceremony).await?;
-
-        let parameters = create_full_parameters::<E>(&ceremony.parameters)?;
-        remove_file_if_exists(COMBINED_HASH_FILENAME)?;
-        remove_file_if_exists(COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME)?;
-        remove_file_if_exists(COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME)?;
-        let rng = derive_rng_from_seed(&from_slice(&beacon_hash));
-        if self.phase == Phase::Phase1 {
-            phase1_cli::contribute(
-                COMBINED_FILENAME,
-                COMBINED_HASH_FILENAME,
+            let parameters = create_full_parameters::<E>(&setup.parameters)?;
+            remove_file_if_exists(setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id))?;
+            remove_file_if_exists(setup_filename!(
                 COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                setup.setup_id
+            ))?;
+            remove_file_if_exists(setup_filename!(
                 COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
-                DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                BatchExpMode::Auto,
-                &parameters,
-                rng,
-            );
-        } else {
-            phase2_cli::contribute(
-                COMBINED_FILENAME,
-                COMBINED_HASH_FILENAME,
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                setup.setup_id
+            ))?;
+            let rng = derive_rng_from_seed(&from_slice(&beacon_hash));
+            if self.phase == Phase::Phase1 {
+                phase1_cli::contribute(
+                    setup_filename!(COMBINED_FILENAME, setup.setup_id),
+                    setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                        setup.setup_id
+                    ),
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+                        setup.setup_id
+                    ),
+                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                    BatchExpMode::Auto,
+                    &parameters,
+                    rng,
+                );
+            } else {
+                phase2_cli::contribute(
+                    setup_filename!(COMBINED_FILENAME, setup.setup_id),
+                    setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                        setup.setup_id
+                    ),
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+                        setup.setup_id
+                    ),
+                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                    BatchExpMode::Direct,
+                    rng,
+                );
+            }
+            info!("applied beacon, verifying");
+            remove_file_if_exists(setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id))?;
+            remove_file_if_exists(setup_filename!(
                 COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
-                DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                BatchExpMode::Direct,
-                rng,
-            );
-        }
-        info!("applied beacon, verifying");
-        remove_file_if_exists(COMBINED_HASH_FILENAME)?;
-        remove_file_if_exists(COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME)?;
-        remove_file_if_exists(COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME)?;
-        remove_file_if_exists(COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME)?;
-        if self.phase == Phase::Phase1 {
-            phase1_cli::transform_pok_and_correctness(
-                COMBINED_FILENAME,
-                COMBINED_HASH_FILENAME,
-                DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
-                DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
+                setup.setup_id
+            ))?;
+            remove_file_if_exists(setup_filename!(
                 COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+                setup.setup_id
+            ))?;
+            remove_file_if_exists(setup_filename!(
                 COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME,
-                SubgroupCheckMode::Auto,
-                false, // ratio check
-                &parameters,
-            );
-            phase1_cli::transform_ratios(
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
-                DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                &parameters,
-            );
-        } else {
-            phase2_cli::verify(
-                COMBINED_FILENAME,
-                COMBINED_HASH_FILENAME,
-                DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                setup.setup_id
+            ))?;
+            if self.phase == Phase::Phase1 {
+                phase1_cli::transform_pok_and_correctness(
+                    setup_filename!(COMBINED_FILENAME, setup.setup_id),
+                    setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
+                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                        setup.setup_id
+                    ),
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+                        setup.setup_id
+                    ),
+                    DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+                        setup.setup_id
+                    ),
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME,
+                        setup.setup_id
+                    ),
+                    SubgroupCheckMode::Auto,
+                    false, // ratio check
+                    &parameters,
+                );
+                phase1_cli::transform_ratios(
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+                        setup.setup_id
+                    ),
+                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                    &parameters,
+                );
+            } else {
+                phase2_cli::verify(
+                    setup_filename!(COMBINED_FILENAME, setup.setup_id),
+                    setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
+                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                        setup.setup_id
+                    ),
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+                        setup.setup_id
+                    ),
+                    DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+                        setup.setup_id
+                    ),
+                    setup_filename!(
+                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME,
+                        setup.setup_id
+                    ),
+                    SubgroupCheckMode::Auto,
+                    false,
+                );
+            }
+            let response_hash_from_file = read_hash_from_file(setup_filename!(
                 COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
-                DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME,
-                SubgroupCheckMode::Auto,
-                false,
-            );
+                setup.setup_id
+            ))?;
+            final_hashes.push(response_hash_from_file);
         }
-
-        let response_hash_from_file =
-            read_hash_from_file(COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME)?;
+        transcript.final_hashes = Some(final_hashes);
         transcript.beacon_hash = Some(hex::encode(&beacon_hash));
-        transcript.final_hash = Some(response_hash_from_file);
         save_transcript(&transcript)?;
         Ok(())
     }
@@ -705,6 +803,7 @@ impl Control {
     async fn remove_last_contribution(
         &self,
         expected_participant_id: &ParticipantId,
+        setup_index: usize,
         chunk_index: usize,
     ) -> Result<()> {
         let mut ceremony = self.get_ceremony().await?;
@@ -716,7 +815,7 @@ impl Control {
             )
             .into());
         }
-        let participant_id_from_chunk = ceremony.chunks[chunk_index]
+        let participant_id_from_chunk = ceremony.setups[setup_index].chunks[chunk_index]
             .contributions
             .last()
             .unwrap()
@@ -731,8 +830,13 @@ impl Control {
             )
             .into());
         }
-        ceremony.chunks[chunk_index].contributions = ceremony.chunks[chunk_index].contributions
-            [..ceremony.chunks[chunk_index].contributions.len() - 1]
+        ceremony.setups[setup_index].chunks[chunk_index].contributions = ceremony.setups
+            [setup_index]
+            .chunks[chunk_index]
+            .contributions[..ceremony.setups[setup_index].chunks[chunk_index]
+            .contributions
+            .len()
+            - 1]
             .to_vec();
         self.put_ceremony(&ceremony).await?;
         Ok(())
@@ -879,7 +983,7 @@ async fn main() {
         },
         Command::RemoveLastContribution(opts) => {
             control
-                .remove_last_contribution(&opts.participant_id, opts.chunk_index)
+                .remove_last_contribution(&opts.participant_id, opts.setup_index, opts.chunk_index)
                 .await
                 .expect("Should have run command successfully");
         }
