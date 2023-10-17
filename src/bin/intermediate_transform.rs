@@ -8,7 +8,7 @@ use gumdrop::Options;
 use snark_setup_operator::data_structs::Setup;
 use snark_setup_operator::setup_filename;
 use snark_setup_operator::transcript_data_structs::Transcript;
-use snark_setup_operator::utils::{COMBINED_FILENAME, PHASE2_FILENAME};
+use snark_setup_operator::utils::{COMBINED_FILENAME, PHASE2_INIT_FILENAME};
 use snark_setup_operator::{
     error::VerifyTranscriptError,
     utils::{create_full_parameters, remove_file_if_exists},
@@ -69,9 +69,9 @@ impl IntermediateTransform {
     {
         let parameters = create_full_parameters::<E>(&setup.parameters)?;
 
-        remove_file_if_exists(setup_filename!(PHASE2_FILENAME, setup.setup_id))?;
+        remove_file_if_exists(setup_filename!(PHASE2_INIT_FILENAME, setup.setup_id))?;
         phase1_cli::prepare_phase2(
-            setup_filename!(PHASE2_FILENAME, setup.setup_id),
+            setup_filename!(PHASE2_INIT_FILENAME, setup.setup_id),
             setup_filename!(COMBINED_FILENAME, setup.setup_id),
             setup.parameters.power,
             &parameters,

@@ -133,7 +133,7 @@ pub struct Parameters {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Setup {
-    pub setup_id: usize,
+    pub setup_id: String,
     pub chunks: Vec<Chunk>,
     pub parameters: Parameters,
 }
@@ -173,14 +173,15 @@ impl Display for UniqueChunkId {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkInfo {
-    pub chunk_id: UniqueChunkId,
+    pub parameters: Parameters,
+    pub unique_chunk_id: UniqueChunkId,
     pub lock_holder: Option<ParticipantId>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkDownloadInfo {
-    pub chunk_id: UniqueChunkId,
+    pub unique_chunk_id: UniqueChunkId,
     pub lock_holder: Option<ParticipantId>,
     pub last_response_url: Option<String>,
     pub last_challenge_url: Option<String>,
@@ -192,7 +193,6 @@ pub struct ChunkDownloadInfo {
 pub struct FilteredChunks {
     pub chunks: Vec<ChunkInfo>,
     pub locked_chunks: Vec<UniqueChunkId>,
-    pub parameters: Parameters,
     pub num_non_contributed: usize,
     pub num_chunks: usize,
     pub max_locks: u64,
@@ -247,7 +247,7 @@ pub struct SignedVerifiedDataParsed {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ContributionUploadUrl {
-    pub chunk_id: UniqueChunkId,
+    pub unique_chunk_id: UniqueChunkId,
     pub participant_id: ParticipantId,
     pub write_url: String,
 }

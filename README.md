@@ -76,7 +76,12 @@ COORDINATOR_AUTH_TYPE=celo
 
 Initializing ceremony:
 ```
-RUST_LOG=info cargo run --bin new_ceremony --release -- --upload-mode direct --chunk-size 10 --powers 12 --server-url http://localhost:8080 --verifier $(cat nimiq-verifier.keys | jq .publicKey -r) --deployer $(cat nimiq-verifier.keys | jq .publicKey -r) --output-dir ~/snark-setup-coordinator/coordinator-service/.storage -k nimiq-verifier.keys
+RUST_LOG=info cargo run --bin new_ceremony --release -- --server-url http://localhost:8080 --verifier $(cat nimiq-verifier.keys | jq .publicKey -r) --deployer $(cat nimiq-verifier.keys | jq .publicKey -r) --output-dir ~/snark-setup-coordinator/coordinator-service/.storage -k nimiq-verifier.keys
+```
+
+Initializing setup:
+```
+echo 1 | RUST_LOG=info cargo run --bin new_setup --release -- --version 1 --chunk-size 10 --powers 12 --upload-mode direct --circuit-filename circuit_2992c --server-url http://localhost:8080 --output-dir ~/snark-setup-coordinator/coordinator-service/.storage --unsafe-passphrase --keys-file $BASE_DIR/nimiq-verifier.keys
 ```
 
 Add the test participant and verifier:

@@ -1,6 +1,3 @@
-use ark_bls12_377::Bls12_377;
-use ark_mnt4_753::MNT4_753;
-use ark_mnt6_753::MNT6_753;
 use phase1::Phase1Parameters;
 use serde_json::Value;
 use snark_setup_operator::data_structs::{
@@ -20,8 +17,11 @@ use snark_setup_operator::utils::{
 use snark_setup_operator::{data_structs::Response, error::ContributeError};
 
 use anyhow::Result;
+use ark_bls12_377::Bls12_377;
 use ark_bw6_761::BW6_761;
 use ark_ec::pairing::Pairing;
+use ark_mnt4_753::MNT4_753;
+use ark_mnt6_753::MNT6_753;
 use chrono::Duration;
 use gumdrop::Options;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -42,8 +42,9 @@ use setup_utils::{
     DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
 };
 use snark_setup_operator::utils::{string_to_phase, Phase};
+use std::cmp::min;
 use std::collections::{HashMap, HashSet};
-use std::ops::Deref;
+use std::ops::{Deref, Neg};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::SeqCst};
 use std::sync::RwLock;
 use tokio::time::Instant;
@@ -190,8 +191,10 @@ pub struct Contribute {
     pub exit_when_finished_contributing: bool,
     pub attestation: Attestation,
 
+    task_index: Option<usize>,
+
     // This is the only mutable state we hold.
-    pub chosen_chunk_id: Option<UniqueChunkId>,
+    pub chosen_unique_chunk_id: Option<UniqueChunkId>,
 }
 
 impl Contribute {
@@ -212,19 +215,12 @@ impl Contribute {
             max_in_download_lane: opts.max_in_download_lane,
             max_in_process_lane: opts.max_in_process_lane,
             max_in_upload_lane: opts.max_in_upload_lane,
-            challenge_filename: setup_filename!(CHALLENGE_FILENAME, setup.setup_id).to_string(),
-            challenge_hash_filename: setup_filename!(CHALLENGE_HASH_FILENAME, setup.setup_id)
-                .to_string(),
-            response_filename: setup_filename!(RESPONSE_FILENAME, setup.setup_id).to_string(),
-            response_hash_filename: setup_filename!(RESPONSE_HASH_FILENAME, setup.setup_id)
-                .to_string(),
-            new_challenge_filename: setup_filename!(NEW_CHALLENGE_FILENAME, setup.setup_id)
-                .to_string(),
-            new_challenge_hash_filename: setup_filename!(
-                NEW_CHALLENGE_HASH_FILENAME,
-                setup.setup_id
-            )
-            .to_string(),
+            challenge_filename: "".to_string(),
+            challenge_hash_filename: "".to_string(),
+            response_filename: "".to_string(),
+            response_hash_filename: "".to_string(),
+            new_challenge_filename: "".to_string(),
+            new_challenge_hash_filename: "".to_string(),
             disable_pipelining: opts.disable_pipelining,
             force_correctness_checks: opts.force_correctness_checks,
             batch_exp_mode: opts.batch_exp_mode,
@@ -234,20 +230,16 @@ impl Contribute {
             exit_when_finished_contributing: opts.exit_when_finished_contributing,
             attestation: attestation.clone(),
 
-            chosen_chunk_id: None,
+            task_index: None,
+
+            chosen_unique_chunk_id: None,
         };
         Ok(contribute_params)
     }
 
-    pub fn clone_with_new_filenames(&self, index: usize) -> Self {
+    pub fn clone_with_index(&self, index: usize) -> Self {
         let mut cloned = self.clone();
-        cloned.challenge_filename = format!("{}_{}", self.challenge_filename, index);
-        cloned.challenge_hash_filename = format!("{}_{}", self.challenge_hash_filename, index);
-        cloned.response_filename = format!("{}_{}", self.response_filename, index);
-        cloned.response_hash_filename = format!("{}_{}", self.response_hash_filename, index);
-        cloned.new_challenge_filename = format!("{}_{}", self.new_challenge_filename, index);
-        cloned.new_challenge_hash_filename =
-            format!("{}_{}", self.new_challenge_hash_filename, index);
+        cloned.task_index = Some(index);
 
         cloned
     }
@@ -398,7 +390,7 @@ impl Contribute {
         });
         for i in 0..total_tasks {
             let delay_duration = Duration::seconds(DELAY_AFTER_ERROR_DURATION_SECS).to_std()?;
-            let mut cloned = self.clone_with_new_filenames(i);
+            let mut cloned = self.clone_with_index(i);
             let progress_bar_for_thread = progress_bar.clone();
             let jh = tokio::spawn(async move {
                 loop {
@@ -412,7 +404,7 @@ impl Contribute {
                             warn!("Got error from run: {}, retrying...", e);
                             progress_bar_for_thread
                                 .println(&format!("Got error from run: {}, retrying...", e));
-                            if let Some(chunk_id) = cloned.chosen_chunk_id.as_ref() {
+                            if let Some(chunk_id) = cloned.chosen_unique_chunk_id.as_ref() {
                                 if cloned
                                     .remove_chunk_id_from_lane_if_exists(
                                         &PipelineLane::Download,
@@ -504,7 +496,7 @@ impl Contribute {
         let chunk_info = self.get_chunk_info().await?;
         let num_chunks = chunk_info.num_chunks;
         progress_bar.set_length(num_chunks as u64);
-        let num_non_contributed_chunks = chunk_info.num_non_contributed;
+        let num_non_contributed_chunks = min(chunk_info.num_non_contributed, num_chunks);
 
         let participant_locked_chunks = self.get_participant_locked_chunks_display()?;
         if participant_locked_chunks.len() > 0 {
@@ -540,7 +532,7 @@ impl Contribute {
         Ok(false)
     }
 
-    fn choose_chunk_id(&self, ceremony: &FilteredChunks) -> Result<UniqueChunkId> {
+    fn choose_unique_chunk_id(&self, ceremony: &FilteredChunks) -> Result<UniqueChunkId> {
         let chunk_ids_from_pipeline: HashSet<UniqueChunkId> = {
             let mut chunk_ids = vec![];
             let pipeline = self.get_pipeline_snapshot()?;
@@ -563,7 +555,7 @@ impl Contribute {
                 .chunks
                 .iter()
                 .filter(|c| c.lock_holder == Some(self.participant_id.clone()))
-                .map(|c| c.chunk_id.clone())
+                .map(|c| c.unique_chunk_id.clone())
                 .collect()
         };
         for locked_chunk_id in locked_chunk_ids_from_ceremony {
@@ -579,7 +571,7 @@ impl Contribute {
             .clone())
     }
 
-    fn add_chunk_id_to_download_lane(&self, chunk_id: &UniqueChunkId) -> Result<bool> {
+    fn add_chunk_id_to_download_lane(&self, unique_chunk_id: &UniqueChunkId) -> Result<bool> {
         let lane = &PipelineLane::Download;
         let max_in_lane = match *lane {
             PipelineLane::Download => self.max_in_download_lane,
@@ -593,13 +585,13 @@ impl Contribute {
         let lane_list = pipeline
             .get_mut(lane)
             .ok_or(ContributeError::LaneWasNullError(lane.to_string()))?;
-        if lane_list.contains(&chunk_id) || lane_list.len() >= max_in_lane {
+        if lane_list.contains(&unique_chunk_id) || lane_list.len() >= max_in_lane {
             return Ok(false);
         }
-        lane_list.push(chunk_id.clone());
+        lane_list.push(unique_chunk_id.clone());
         debug!(
             "Chunk ID {} added successfully to lane {}. Current pipeline is: {:?}",
-            chunk_id,
+            unique_chunk_id,
             lane,
             pipeline.deref()
         );
@@ -609,7 +601,7 @@ impl Contribute {
     fn remove_chunk_id_from_lane_if_exists(
         &self,
         lane: &PipelineLane,
-        chunk_id: &UniqueChunkId,
+        unique_chunk_id: &UniqueChunkId,
     ) -> Result<bool> {
         let mut pipeline = PIPELINE
             .write()
@@ -618,13 +610,13 @@ impl Contribute {
         let lane_list = pipeline
             .get_mut(lane)
             .ok_or(ContributeError::LaneWasNullError(lane.to_string()))?;
-        if !lane_list.contains(&chunk_id) {
+        if !lane_list.contains(&unique_chunk_id) {
             return Ok(false);
         }
-        lane_list.retain(|c| c != chunk_id);
+        lane_list.retain(|c| c != unique_chunk_id);
         debug!(
             "Chunk ID {} removed successfully from lane {}. Current pipeline is: {:?}",
-            chunk_id,
+            unique_chunk_id,
             lane,
             pipeline.deref()
         );
@@ -635,7 +627,7 @@ impl Contribute {
         &self,
         from: &PipelineLane,
         to: &PipelineLane,
-        chunk_id: &UniqueChunkId,
+        unique_chunk_id: &UniqueChunkId,
     ) -> Result<bool> {
         let max_in_lane = match *to {
             PipelineLane::Download => self.max_in_download_lane,
@@ -660,14 +652,14 @@ impl Contribute {
                 let from_list = pipeline
                     .get_mut(from)
                     .ok_or(ContributeError::LaneWasNullError(from.to_string()))?;
-                if !from_list.contains(&chunk_id) {
+                if !from_list.contains(&unique_chunk_id) {
                     return Err(ContributeError::LaneDidNotContainChunkWithIDError(
                         from.to_string(),
-                        chunk_id.to_string(),
+                        unique_chunk_id.to_string(),
                     )
                     .into());
                 }
-                from_list.retain(|c| c != chunk_id);
+                from_list.retain(|c| c != unique_chunk_id);
             }
 
             {
@@ -675,18 +667,18 @@ impl Contribute {
                     .get_mut(to)
                     .ok_or(ContributeError::LaneWasNullError(to.to_string()))?;
 
-                if to_list.contains(&chunk_id) {
+                if to_list.contains(&unique_chunk_id) {
                     return Err(ContributeError::LaneAlreadyContainsChunkWithIDError(
                         to.to_string(),
-                        chunk_id.to_string(),
+                        unique_chunk_id.to_string(),
                     )
                     .into());
                 }
-                to_list.push(chunk_id.clone());
+                to_list.push(unique_chunk_id.clone());
             }
             debug!(
                 "Chunk ID {} moved successfully from lane {} to lane {}. Current pipeline is: {:?}",
-                chunk_id,
+                unique_chunk_id,
                 from,
                 to,
                 pipeline.deref()
@@ -699,14 +691,14 @@ impl Contribute {
         &self,
         from: &PipelineLane,
         to: &PipelineLane,
-        chunk_id: &UniqueChunkId,
+        unique_chunk_id: &UniqueChunkId,
     ) -> Result<()> {
         loop {
             if EXITING.load(SeqCst) {
                 return Err(ContributeError::GotExitSignalError.into());
             }
             match self
-                .move_chunk_id_from_lane_to_lane(from, to, chunk_id)
+                .move_chunk_id_from_lane_to_lane(from, to, unique_chunk_id)
                 .await?
             {
                 true => {
@@ -724,10 +716,12 @@ impl Contribute {
     async fn contribute<P: Pairing>(
         &self,
         chunk: &ChunkDownloadInfo,
-        chunk_id: &UniqueChunkId,
         phase: Phase,
         parameters: Phase1Parameters<P>,
-    ) -> Result<(&String, Value)> {
+    ) -> Result<(&String, Value)>
+    where
+        P::G1Affine: Neg<Output = P::G1Affine>,
+    {
         let download_url = self.get_download_url_of_last_challenge(&chunk)?;
         match self.upload_mode {
             UploadMode::Auto => {
@@ -757,7 +751,7 @@ impl Contribute {
         self.wait_and_move_chunk_id_from_lane_to_lane(
             &PipelineLane::Download,
             &PipelineLane::Process,
-            &chunk_id,
+            &chunk.unique_chunk_id,
         )
         .await?;
         let seed = SEED.read().expect("Should have been able to read seed");
@@ -804,7 +798,7 @@ impl Contribute {
             })
         } else {
             spawn_quiet(move || {
-                phase2_cli::contribute(
+                phase2_cli::contribute::<P>(
                     &challenge_filename,
                     &challenge_hash_filename,
                     &response_filename,
@@ -858,10 +852,12 @@ impl Contribute {
     async fn verify<P: Pairing>(
         &self,
         chunk: &ChunkDownloadInfo,
-        chunk_id: &UniqueChunkId,
         phase: Phase,
         parameters: Phase1Parameters<P>,
-    ) -> Result<(&String, Value)> {
+    ) -> Result<(&String, Value)>
+    where
+        P::G1Affine: Neg<Output = P::G1Affine>,
+    {
         let challenge_download_url =
             self.get_download_url_of_last_challenge_for_verifying(&chunk)?;
         let response_download_url = self.get_download_url_of_last_response(&chunk)?;
@@ -913,7 +909,7 @@ impl Contribute {
         self.wait_and_move_chunk_id_from_lane_to_lane(
             &PipelineLane::Download,
             &PipelineLane::Process,
-            &chunk_id,
+            &chunk.unique_chunk_id,
         )
         .await?;
         let start = Instant::now();
@@ -965,7 +961,7 @@ impl Contribute {
             })
         } else {
             spawn_quiet(move || {
-                phase2_cli::verify(
+                phase2_cli::verify::<P>(
                     &challenge_filename,
                     &challenge_hash_filename,
                     upgrade_correctness_check_config(
@@ -1015,6 +1011,48 @@ impl Contribute {
         ))
     }
 
+    fn update_filenames(&mut self, setup_id: String) {
+        let task_index = self
+            .task_index
+            .expect("Can only update filenames with task index");
+        self.challenge_filename = format!(
+            "task{}_{}",
+            task_index,
+            setup_filename!(CHALLENGE_FILENAME, setup_id)
+        )
+        .to_string();
+        self.challenge_hash_filename = format!(
+            "task{}_{}",
+            task_index,
+            setup_filename!(CHALLENGE_HASH_FILENAME, setup_id)
+        )
+        .to_string();
+        self.response_filename = format!(
+            "task{}_{}",
+            task_index,
+            setup_filename!(RESPONSE_FILENAME, setup_id)
+        )
+        .to_string();
+        self.response_hash_filename = format!(
+            "task{}_{}",
+            task_index,
+            setup_filename!(RESPONSE_HASH_FILENAME, setup_id)
+        )
+        .to_string();
+        self.new_challenge_filename = format!(
+            "task{}_{}",
+            task_index,
+            setup_filename!(NEW_CHALLENGE_FILENAME, setup_id)
+        )
+        .to_string();
+        self.new_challenge_hash_filename = format!(
+            "task{}_{}",
+            task_index,
+            setup_filename!(NEW_CHALLENGE_HASH_FILENAME, setup_id)
+        )
+        .to_string();
+    }
+
     async fn run(&mut self) -> Result<()> {
         loop {
             self.wait_for_available_spot_in_lane(&PipelineLane::Download)
@@ -1030,12 +1068,32 @@ impl Contribute {
             let incomplete_chunks = self.get_non_contributed_and_available_chunks(&chunk_info)?;
             if incomplete_chunks.len() == 0 {
                 if num_non_contributed_chunks == 0 {
-                    remove_file_if_exists(&self.challenge_filename)?;
-                    remove_file_if_exists(&self.challenge_hash_filename)?;
-                    remove_file_if_exists(&self.response_filename)?;
-                    remove_file_if_exists(&self.response_hash_filename)?;
-                    remove_file_if_exists(&self.new_challenge_filename)?;
-                    remove_file_if_exists(&self.new_challenge_hash_filename)?;
+                    for chunk_info in chunk_info.chunks.iter() {
+                        remove_file_if_exists(setup_filename!(
+                            CHALLENGE_FILENAME,
+                            chunk_info.unique_chunk_id.setup_id
+                        ))?;
+                        remove_file_if_exists(setup_filename!(
+                            CHALLENGE_HASH_FILENAME,
+                            chunk_info.unique_chunk_id.setup_id
+                        ))?;
+                        remove_file_if_exists(setup_filename!(
+                            RESPONSE_FILENAME,
+                            chunk_info.unique_chunk_id.setup_id
+                        ))?;
+                        remove_file_if_exists(setup_filename!(
+                            RESPONSE_HASH_FILENAME,
+                            chunk_info.unique_chunk_id.setup_id
+                        ))?;
+                        remove_file_if_exists(setup_filename!(
+                            NEW_CHALLENGE_FILENAME,
+                            chunk_info.unique_chunk_id.setup_id
+                        ))?;
+                        remove_file_if_exists(setup_filename!(
+                            NEW_CHALLENGE_HASH_FILENAME,
+                            chunk_info.unique_chunk_id.setup_id
+                        ))?;
+                    }
                     return Ok(());
                 } else {
                     tokio::time::sleep(Duration::seconds(DELAY_WAIT_FOR_PIPELINE_SECS).to_std()?)
@@ -1043,52 +1101,50 @@ impl Contribute {
                     continue;
                 }
             }
-            let chunk_id = self.choose_chunk_id(&chunk_info)?;
-            if !self.add_chunk_id_to_download_lane(&chunk_id)? {
+
+            let unique_chunk_id = self.choose_unique_chunk_id(&chunk_info)?;
+            self.update_filenames(unique_chunk_id.setup_id.clone());
+            if !self.add_chunk_id_to_download_lane(&unique_chunk_id)? {
                 continue;
             }
-            self.chosen_chunk_id = Some(chunk_id.clone());
-            self.lock_chunk(&chunk_id).await?;
+            self.chosen_unique_chunk_id = Some(unique_chunk_id.clone());
+            self.lock_chunk(&unique_chunk_id).await?;
             self.set_status_update_signal();
 
-            let (chunk_index, chunk) = self.get_chunk_download_info(&chunk_id).await?;
+            // Get parameters.
+            let parameters = chunk_info
+                .chunks
+                .iter()
+                .find(|chunk| chunk.unique_chunk_id == unique_chunk_id)
+                .map(|chunk| chunk.parameters.clone())
+                .ok_or(ContributeError::CouldNotChooseChunkError)?;
+
+            let (chunk_index, chunk) = self.get_chunk_download_info(&unique_chunk_id).await?;
 
             let (file_to_upload, contributed_or_verified_data) = match self.participation_mode {
                 ParticipationMode::Contribute => {
                     remove_file_if_exists(&self.challenge_filename)?;
                     remove_file_if_exists(&self.challenge_hash_filename)?;
-                    match chunk_info.parameters.curve_kind.as_str() {
+                    match parameters.curve_kind.as_str() {
                         "bw6" => {
-                            let parameters = create_parameters_for_chunk::<BW6_761>(
-                                &chunk_info.parameters,
-                                chunk_index,
-                            )?;
-                            self.contribute(&chunk, &chunk_id, phase, parameters)
-                                .await?
+                            let parameters =
+                                create_parameters_for_chunk::<BW6_761>(&parameters, chunk_index)?;
+                            self.contribute(&chunk, phase, parameters).await?
                         }
                         "bls12_377" => {
-                            let parameters = create_parameters_for_chunk::<Bls12_377>(
-                                &chunk_info.parameters,
-                                chunk_index,
-                            )?;
-                            self.contribute(&chunk, &chunk_id, phase, parameters)
-                                .await?
+                            let parameters =
+                                create_parameters_for_chunk::<Bls12_377>(&parameters, chunk_index)?;
+                            self.contribute(&chunk, phase, parameters).await?
                         }
                         "mnt4_753" => {
-                            let parameters = create_parameters_for_chunk::<MNT4_753>(
-                                &chunk_info.parameters,
-                                chunk_index,
-                            )?;
-                            self.contribute(&chunk, &chunk_id, phase, parameters)
-                                .await?
+                            let parameters =
+                                create_parameters_for_chunk::<MNT4_753>(&parameters, chunk_index)?;
+                            self.contribute(&chunk, phase, parameters).await?
                         }
                         "mnt6_753" => {
-                            let parameters = create_parameters_for_chunk::<MNT6_753>(
-                                &chunk_info.parameters,
-                                chunk_index,
-                            )?;
-                            self.contribute(&chunk, &chunk_id, phase, parameters)
-                                .await?
+                            let parameters =
+                                create_parameters_for_chunk::<MNT6_753>(&parameters, chunk_index)?;
+                            self.contribute(&chunk, phase, parameters).await?
                         }
                         c => {
                             panic!("Unsupported curve: {}", c);
@@ -1100,34 +1156,26 @@ impl Contribute {
                     remove_file_if_exists(&self.challenge_hash_filename)?;
                     remove_file_if_exists(&self.response_filename)?;
                     remove_file_if_exists(&self.response_hash_filename)?;
-                    match chunk_info.parameters.curve_kind.as_str() {
+                    match parameters.curve_kind.as_str() {
                         "bw6" => {
-                            let parameters = create_parameters_for_chunk::<BW6_761>(
-                                &chunk_info.parameters,
-                                chunk_index,
-                            )?;
-                            self.verify(&chunk, &chunk_id, phase, parameters).await?
+                            let parameters =
+                                create_parameters_for_chunk::<BW6_761>(&parameters, chunk_index)?;
+                            self.verify(&chunk, phase, parameters).await?
                         }
                         "bls12_377" => {
-                            let parameters = create_parameters_for_chunk::<Bls12_377>(
-                                &chunk_info.parameters,
-                                chunk_index,
-                            )?;
-                            self.verify(&chunk, &chunk_id, phase, parameters).await?
+                            let parameters =
+                                create_parameters_for_chunk::<Bls12_377>(&parameters, chunk_index)?;
+                            self.verify(&chunk, phase, parameters).await?
                         }
                         "mnt4_753" => {
-                            let parameters = create_parameters_for_chunk::<MNT4_753>(
-                                &chunk_info.parameters,
-                                chunk_index,
-                            )?;
-                            self.verify(&chunk, &chunk_id, phase, parameters).await?
+                            let parameters =
+                                create_parameters_for_chunk::<MNT4_753>(&parameters, chunk_index)?;
+                            self.verify(&chunk, phase, parameters).await?
                         }
                         "mnt6_753" => {
-                            let parameters = create_parameters_for_chunk::<MNT6_753>(
-                                &chunk_info.parameters,
-                                chunk_index,
-                            )?;
-                            self.verify(&chunk, &chunk_id, phase, parameters).await?
+                            let parameters =
+                                create_parameters_for_chunk::<MNT6_753>(&parameters, chunk_index)?;
+                            self.verify(&chunk, phase, parameters).await?
                         }
                         c => {
                             panic!("Unsupported curve: {}", c);
@@ -1139,10 +1187,10 @@ impl Contribute {
             self.wait_and_move_chunk_id_from_lane_to_lane(
                 &PipelineLane::Process,
                 &PipelineLane::Upload,
-                &chunk_id,
+                &unique_chunk_id,
             )
             .await?;
-            let upload_url = self.get_upload_url(&chunk_id).await?;
+            let upload_url = self.get_upload_url(&unique_chunk_id).await?;
             let authorization = get_authorization_value(
                 &self.key_pair,
                 "POST",
@@ -1170,10 +1218,10 @@ impl Contribute {
                 data: contributed_or_verified_data,
             };
 
-            self.notify_contribution(&chunk_id, serde_json::to_value(signed_data)?)
+            self.notify_contribution(&unique_chunk_id, serde_json::to_value(signed_data)?)
                 .await?;
 
-            self.remove_chunk_id_from_lane_if_exists(&PipelineLane::Upload, &chunk_id)?;
+            self.remove_chunk_id_from_lane_if_exists(&PipelineLane::Upload, &unique_chunk_id)?;
             self.set_status_update_signal();
         }
     }
@@ -1227,7 +1275,7 @@ impl Contribute {
 
         for chunk in ceremony.chunks.iter() {
             if chunk.lock_holder.is_none() {
-                non_contributed.push(chunk.chunk_id.clone());
+                non_contributed.push(chunk.unique_chunk_id.clone());
             }
         }
 
@@ -1236,7 +1284,7 @@ impl Contribute {
 
     fn get_download_url_of_last_challenge(&self, chunk: &ChunkDownloadInfo) -> Result<String> {
         let url = chunk.last_challenge_url.clone().ok_or(
-            ContributeError::VerifiedLocationWasNoneForChunkID(chunk.chunk_id.to_string()),
+            ContributeError::VerifiedLocationWasNoneForChunkID(chunk.unique_chunk_id.to_string()),
         )?;
         Ok(url)
     }
@@ -1246,23 +1294,25 @@ impl Contribute {
         chunk: &ChunkDownloadInfo,
     ) -> Result<String> {
         let url = chunk.previous_challenge_url.clone().ok_or(
-            ContributeError::VerifiedLocationWasNoneForChunkID(chunk.chunk_id.to_string()),
+            ContributeError::VerifiedLocationWasNoneForChunkID(chunk.unique_chunk_id.to_string()),
         )?;
         Ok(url)
     }
 
     fn get_download_url_of_last_response(&self, chunk: &ChunkDownloadInfo) -> Result<String> {
         let url = chunk.last_response_url.clone().ok_or(
-            ContributeError::ContributedLocationWasNoneForChunkID(chunk.chunk_id.to_string()),
+            ContributeError::ContributedLocationWasNoneForChunkID(
+                chunk.unique_chunk_id.to_string(),
+            ),
         )?;
         Ok(url)
     }
 
     async fn get_chunk_download_info(
         &self,
-        chunk_id: &UniqueChunkId,
+        unique_chunk_id: &UniqueChunkId,
     ) -> Result<(usize, ChunkDownloadInfo)> {
-        let get_path = format!("chunks/{}/info", chunk_id);
+        let get_path = format!("chunks/{}/info", unique_chunk_id);
         let get_chunk_url = self.server_url.join(&get_path)?;
         let client = reqwest::Client::new();
         let response = client
@@ -1274,7 +1324,7 @@ impl Contribute {
         let data = response.text().await?;
         let chunk: ChunkDownloadInfo =
             serde_json::from_str::<Response<ChunkDownloadInfo>>(&data)?.result;
-        Ok((chunk_id.chunk_id.parse::<usize>()?, chunk))
+        Ok((unique_chunk_id.chunk_id.parse::<usize>()?, chunk))
     }
 
     async fn get_chunk_info(&self) -> Result<FilteredChunks> {
@@ -1291,13 +1341,12 @@ impl Contribute {
             .await?
             .error_for_status()?;
         let data = response.text().await?;
-        let ceremony: FilteredChunks =
-            serde_json::from_str::<Response<FilteredChunks>>(&data)?.result;
+        let ceremony = serde_json::from_str::<Response<FilteredChunks>>(&data)?.result;
         Ok(ceremony)
     }
 
-    async fn lock_chunk(&self, chunk_id: &UniqueChunkId) -> Result<()> {
-        let lock_path = format!("chunks/{}/lock", chunk_id);
+    async fn lock_chunk(&self, unique_chunk_id: &UniqueChunkId) -> Result<()> {
+        let lock_path = format!("chunks/{}/lock", unique_chunk_id);
         let lock_chunk_url = self.server_url.join(&lock_path)?;
         let client = reqwest::Client::new();
         let authorization = get_authorization_value(&self.key_pair, "POST", &lock_path)?;
@@ -1311,8 +1360,12 @@ impl Contribute {
         Ok(())
     }
 
-    async fn unlock_chunk(&self, chunk_id: &UniqueChunkId, error: Option<String>) -> Result<()> {
-        let unlock_path = format!("chunks/{}/unlock", chunk_id);
+    async fn unlock_chunk(
+        &self,
+        unique_chunk_id: &UniqueChunkId,
+        error: Option<String>,
+    ) -> Result<()> {
+        let unlock_path = format!("chunks/{}/unlock", unique_chunk_id);
         let unlock_chunk_url = self.server_url.join(&unlock_path)?;
         let client = reqwest::Client::new();
         let authorization = get_authorization_value(&self.key_pair, "POST", &unlock_path)?;
@@ -1326,8 +1379,8 @@ impl Contribute {
         Ok(())
     }
 
-    async fn get_upload_url(&self, chunk_id: &UniqueChunkId) -> Result<String> {
-        let upload_request_path = format!("chunks/{}/contribution", chunk_id);
+    async fn get_upload_url(&self, unique_chunk_id: &UniqueChunkId) -> Result<String> {
+        let upload_request_path = format!("chunks/{}/contribution", unique_chunk_id);
         let upload_request_url = self.server_url.join(&upload_request_path)?;
         let client = reqwest::Client::new();
         let authorization = get_authorization_value(&self.key_pair, "GET", &upload_request_path)?;
@@ -1345,10 +1398,10 @@ impl Contribute {
 
     async fn notify_contribution(
         &self,
-        chunk_id: &UniqueChunkId,
+        unique_chunk_id: &UniqueChunkId,
         body: serde_json::Value,
     ) -> Result<()> {
-        let notify_path = format!("chunks/{}/contribution", chunk_id);
+        let notify_path = format!("chunks/{}/contribution", unique_chunk_id);
         let notify_url = self.server_url.join(&notify_path)?;
         let client = reqwest::Client::new();
         let authorization = get_authorization_value(&self.key_pair, "POST", &notify_path)?;
@@ -1366,7 +1419,7 @@ impl Contribute {
         let data = serde_json::to_value(&attestation)?;
         let signed_data = SignedData {
             signature: sign_json(&self.key_pair, &data)?,
-            data: data,
+            data,
         };
         let notify_path = format!("attest");
         let notify_url = self.server_url.join(&notify_path)?;
@@ -1399,6 +1452,7 @@ fn main() {
     if !opts.disable_keep_awake {
         let _ = keep_awake::inhibit("Nimiq setup contribute", "This will take a while");
     }
+
     let rt = if opts.free_threads > 0 {
         let max_threads = num_cpus::get();
         let threads = max_threads - opts.free_threads;

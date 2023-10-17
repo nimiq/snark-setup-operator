@@ -34,6 +34,8 @@ pub enum VerifyTranscriptError {
     NotAllParticipantsPresent(HashSet<ParticipantId>, HashSet<ParticipantId>),
     #[error("Not all chunks have the same number of contributions")]
     NotAllChunksHaveSameNumberOfContributionsError,
+    #[error("Not all rounds have the same number of setups")]
+    NotAllRoundsHaveSameNumberOfSetups,
     #[error("Beacon hash had wrong length: {0}")]
     BeaconHashWrongLengthError(usize),
     #[error("Beacon hash was different: expected {0}, got {1}")]

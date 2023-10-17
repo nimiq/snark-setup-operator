@@ -4,8 +4,12 @@ ceremony_*
 *.log
 *.keys
 *.swp
-new_challenge
-new_challenge.hash
+setup*_new_challenge
+setup*_new_challenge.hash
+/e2e/setup*_*
+/e2e/task*_setup*_*
+/e2e/transcript*
+/e2e/*attestation.txt
 snark-setup-coordinator
 .DS_Store
 .vscode

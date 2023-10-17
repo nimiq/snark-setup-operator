@@ -29,7 +29,7 @@ use std::{
 };
 use tracing::warn;
 
-pub const PHASE2_FILENAME: &str = "phase2_init";
+pub const PHASE2_INIT_FILENAME: &str = "phase2_init";
 pub const COMBINED_FILENAME: &str = "combined";
 pub const RESPONSE_FILENAME: &str = "response";
 pub const RESPONSE_PREFIX_FOR_AGGREGATION: &str = "response";
@@ -114,6 +114,7 @@ pub async fn download_file_from_azure_async(
                         (chunk_index + 1) * DEFAULT_CHUNK_SIZE - 1
                     };
                     let client = reqwest::Client::new();
+                    // PITODO: Make sure this works with Azure.
                     let mut resp = client
                         .get(&url)
                         .header(CONTENT_TYPE, "application/octet-stream")
@@ -146,7 +147,7 @@ pub async fn download_file_from_azure_async(
     for bytes in bytes_list {
         out.write_all(&bytes)?;
     }
-
+    out.sync_all()?;
     Ok(())
 }
 
@@ -161,6 +162,7 @@ pub async fn download_file_direct_async(url: &str, file_path: &str) -> Result<()
             while let Some(chunk) = resp.chunk().await? {
                 out.write_all(&chunk)?;
             }
+            out.sync_all()?;
             Ok(())
         },
         MaxRetriesHandler::new(DEFAULT_MAX_RETRIES),
@@ -253,6 +255,10 @@ pub fn verify_signed_data<T: Serialize>(
 pub fn read_hash_from_file(file_name: &str) -> Result<String> {
     let mut hash = vec![];
     File::open(file_name)
+        .map_err(|e| {
+            eprintln!("Filename {}", file_name);
+            e
+        })
         .expect("Should have opened hash file.")
         .read_to_end(&mut hash)
         .expect("Should have read hash file.");
@@ -532,6 +538,7 @@ pub fn load_transcript() -> Result<Transcript> {
             })?
             .as_bytes(),
         )?;
+        file.sync_all()?;
     }
     let mut file = File::open(filename)?;
     let mut contents = String::new();
@@ -544,14 +551,21 @@ pub fn save_transcript(transcript: &Transcript) -> Result<()> {
     let filename = "transcript";
     let mut file = File::create(filename)?;
     file.write_all(serde_json::to_string_pretty(transcript)?.as_bytes())?;
+    file.sync_all()?;
 
     Ok(())
 }
 
 pub fn backup_transcript(transcript: &Transcript) -> Result<()> {
-    let filename = format!("transcript_{}", chrono::Utc::now().timestamp_nanos());
+    let filename = format!(
+        "transcript_{}",
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .expect("Invalid time")
+    );
     let mut file = File::create(filename)?;
     file.write_all(serde_json::to_string_pretty(transcript)?.as_bytes())?;
+    file.sync_all()?;
 
     Ok(())
 }
@@ -574,7 +588,8 @@ pub fn extract_signature_from_attestation(attestation: &str) -> Result<(String, 
 }
 
 pub fn write_attestation_to_file(attestation: &Attestation, path: &str) -> Result<()> {
-    File::create(path)?.write_all(
+    let mut file = File::create(path)?;
+    file.write_all(
         format_attestation(
             &attestation.id,
             &attestation.public_key.to_hex(),
@@ -582,6 +597,7 @@ pub fn write_attestation_to_file(attestation: &Attestation, path: &str) -> Resul
         )
         .as_bytes(),
     )?;
+    file.sync_all()?;
     Ok(())
 }
 

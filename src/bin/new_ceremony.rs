@@ -21,8 +21,6 @@ pub struct NewCeremonyOpts {
     pub phase: String,
     #[options(help = "the server url", required)]
     pub server_url: String,
-    #[options(help = "the upload mode", required)]
-    pub upload_mode: String,
     #[options(help = "participants")]
     pub participant: Vec<ParticipantId>,
     #[options(help = "verifiers")]
@@ -34,25 +32,12 @@ pub struct NewCeremonyOpts {
         default = "nimiq.keys"
     )]
     pub keys_file: String,
-    #[options(help = "storage account in azure mode")]
-    pub storage_account: Option<String>,
-    #[options(help = "container name in azure mode")]
-    pub container: Option<String>,
-    #[options(help = "access key in azure mode")]
-    pub access_key: Option<String>,
-    #[options(help = "output dir in direct mode")]
-    pub output_dir: Option<String>,
     #[options(help = "max locks", default = "3")]
     pub max_locks: u64,
     #[options(help = "read passphrase from stdin. THIS IS UNSAFE as it doesn't use pinentry!")]
     pub unsafe_passphrase: bool,
     #[options(help = "use prepared ceremony")]
     pub prepared_ceremony: Option<String>,
-
-    #[options(help = "file with prepared output from phase1. Only used for phase 2")]
-    pub phase1_filename: Option<String>,
-    #[options(help = "file with prepared circuit. Only used for phase 2")]
-    pub circuit_filename: Option<String>,
 }
 
 fn build_ceremony(
@@ -67,14 +52,20 @@ fn build_ceremony(
         shutdown_signal: false,
         attestations: Some(vec![]),
         contributor_ids: [&opts.participant, existing_contributor_ids].concat(),
-        verifier_ids: [&opts.verifier, existing_verifier_ids].concat(),
+        verifier_ids: [&opts.verifier, existing_verifier_ids].concat(), // PITODO: remove duplicates
         phase: opts.phase.clone(),
         setups: vec![],
     };
-    let filename = format!("ceremony_{}", chrono::Utc::now().timestamp_nanos());
+    let filename = format!(
+        "ceremony_{}",
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .expect("Invalid time")
+    );
     info!("Saving ceremony to {}", filename);
     let mut file = File::create(filename)?;
     file.write_all(serde_json::to_string_pretty(&ceremony)?.as_bytes())?;
+    file.sync_all()?;
 
     Ok(ceremony)
 }

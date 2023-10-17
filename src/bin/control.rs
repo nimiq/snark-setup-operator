@@ -25,18 +25,19 @@ use snark_setup_operator::data_structs::{
 use snark_setup_operator::error::{NewRoundError, VerifyTranscriptError};
 use snark_setup_operator::utils::{
     backup_transcript, create_full_parameters, create_parameters_for_chunk,
-    download_file_from_azure_async, get_authorization_value, get_ceremony, get_content_length,
-    load_transcript, read_hash_from_file, read_keys, remove_file_if_exists, save_transcript,
-    string_to_phase, Phase, BEACON_HASH_LENGTH, COMBINED_FILENAME, COMBINED_HASH_FILENAME,
-    COMBINED_NEW_CHALLENGE_FILENAME, COMBINED_NEW_CHALLENGE_HASH_FILENAME,
-    COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+    download_file_direct_async, download_file_from_azure_async, get_authorization_value,
+    get_ceremony, get_content_length, load_transcript, read_hash_from_file, read_keys,
+    remove_file_if_exists, save_transcript, string_to_phase, Phase, BEACON_HASH_LENGTH,
+    COMBINED_FILENAME, COMBINED_HASH_FILENAME, COMBINED_NEW_CHALLENGE_FILENAME,
+    COMBINED_NEW_CHALLENGE_HASH_FILENAME, COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
     COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
     COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
     COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME, INITIAL_CHALLENGE_FILENAME,
     INITIAL_CHALLENGE_HASH_FILENAME, NEW_CHALLENGE_FILENAME, NEW_CHALLENGE_HASH_FILENAME,
-    NEW_CHALLENGE_LIST_FILENAME, RESPONSE_FILENAME, RESPONSE_LIST_FILENAME,
+    NEW_CHALLENGE_LIST_FILENAME, PHASE2_INIT_FILENAME, RESPONSE_FILENAME, RESPONSE_LIST_FILENAME,
     RESPONSE_PREFIX_FOR_AGGREGATION,
 };
+use std::ops::Neg;
 use std::{
     collections::HashSet,
     fs::{copy, File},
@@ -132,19 +133,11 @@ pub struct ControlOpts {
     pub keys_file: String,
     #[options(help = "read passphrase from stdin. THIS IS UNSAFE as it doesn't use pinentry!")]
     pub unsafe_passphrase: bool,
-    #[options(help = "curve", default = "bw6")]
-    pub curve: String,
     #[options(command, required)]
     pub command: Option<Command>,
 
-    #[options(help = "chunk size. Only used for phase 2")]
-    pub chunk_size: Option<usize>,
-    #[options(help = "number powers used in phase 1. Only used for phase 2")]
-    pub phase1_powers: Option<usize>,
-    #[options(help = "file with prepared output from phase1. Only used for phase 2")]
-    pub phase1_filename: Option<String>,
-    #[options(help = "file with prepared circuit. Only used for phase 2")]
-    pub circuit_filename: Option<String>,
+    #[options(help = "files with prepared circuit (in order of setups). Only used for phase 2")]
+    pub circuit_filenames: Vec<String>,
     #[options(help = "initial query filename. Used only for phase2")]
     pub initial_query_filename: Option<String>,
     #[options(help = "initial full filename. Used only for phase2")]
@@ -169,39 +162,31 @@ impl Phase2Opts {
         let server_url = Url::parse(&opts.coordinator_url)?.join("ceremony")?;
         let ceremony = get_ceremony(&server_url.as_str()).await?;
 
+        if ceremony.setups.len() != opts.circuit_filenames.len() {
+            panic!("circuit_filenames must be used and same length as setups when running phase2");
+        }
+
         let mut setups = vec![];
-        for setup in ceremony.setups {
-            let chunk_size = match opts.chunk_size {
-                Some(size) => 1 << size,
-                _ => setup.parameters.chunk_size,
-            };
-            let powers = match opts.phase1_powers {
-                Some(powers) => powers,
-                _ => setup.parameters.power,
-            };
+        for (i, setup) in ceremony.setups.iter().enumerate() {
             setups.push(Phase2Params {
-                chunk_size,
-                phase1_powers: powers,
-                phase1_filename: opts
-                    .phase1_filename
-                    .as_ref()
-                    .expect("phase1_filename must be used when running phase2")
-                    .to_string(),
-                circuit_filename: opts
-                    .circuit_filename
-                    .as_ref()
-                    .expect("circuit_filename must be used when running phase2")
-                    .to_string(),
-                initial_query_filename: opts
-                    .initial_query_filename
-                    .as_ref()
-                    .expect("initial_query_filename needed when running phase2")
-                    .to_string(),
-                initial_full_filename: opts
-                    .initial_full_filename
-                    .as_ref()
-                    .expect("initial_full_filename needed when running phase2")
-                    .to_string(),
+                chunk_size: setup.parameters.chunk_size,
+                phase1_powers: setup.parameters.power,
+                phase1_filename: setup_filename!(PHASE2_INIT_FILENAME, setup.setup_id).to_string(),
+                circuit_filename: opts.circuit_filenames[i].to_string(),
+                initial_query_filename: setup_filename!(
+                    opts.initial_query_filename
+                        .as_ref()
+                        .expect("initial_query_filename needed when running phase2"),
+                    setup.setup_id
+                )
+                .to_string(),
+                initial_full_filename: setup_filename!(
+                    opts.initial_full_filename
+                        .as_ref()
+                        .expect("initial_full_filename needed when running phase2"),
+                    setup.setup_id
+                )
+                .to_string(),
             });
         }
         Ok(Self { setups })
@@ -297,9 +282,15 @@ impl Control {
     }
 
     fn backup_ceremony(&self, ceremony: &Ceremony) -> Result<()> {
-        let filename = format!("ceremony_{}", chrono::Utc::now().timestamp_nanos());
+        let filename = format!(
+            "ceremony_{}",
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .expect("Invalid time")
+        );
         let mut file = File::create(filename)?;
         file.write_all(serde_json::to_string_pretty(ceremony)?.as_bytes())?;
+        file.sync_all()?;
 
         Ok(())
     }
@@ -417,7 +408,11 @@ impl Control {
         &self,
         ceremony: &Ceremony,
         setup: &Setup,
-    ) -> Result<()> {
+        setup_index: usize,
+    ) -> Result<()>
+    where
+        E::G1Affine: Neg<Output = E::G1Affine>,
+    {
         let mut response_list_file =
             File::create(setup_filename!(RESPONSE_LIST_FILENAME, setup.setup_id))?;
         info!("Verifying round {}", ceremony.round);
@@ -431,12 +426,20 @@ impl Control {
             remove_file_if_exists(setup_filename!(RESPONSE_FILENAME, setup.setup_id))?;
             let contributed_location = contribution.contributed_location()?;
             info!("Downloading chunk {}", unique_chunk_id);
-            download_file_from_azure_async(
-                &contributed_location,
-                get_content_length(&contributed_location).await?,
-                setup_filename!(RESPONSE_FILENAME, setup.setup_id),
-            )
-            .await?;
+            if contributed_location.contains("blob.core.windows.net") {
+                download_file_from_azure_async(
+                    &contributed_location,
+                    get_content_length(&contributed_location).await?,
+                    setup_filename!(RESPONSE_FILENAME, setup.setup_id),
+                )
+                .await?;
+            } else {
+                download_file_direct_async(
+                    &contributed_location,
+                    setup_filename!(RESPONSE_FILENAME, setup.setup_id),
+                )
+                .await?;
+            };
             info!("Downloaded chunk {}", unique_chunk_id);
             let response_filename = format!(
                 "{}_{}",
@@ -465,9 +468,9 @@ impl Control {
                 .phase2_opts
                 .as_ref()
                 .expect("Phase 2 opts not found when running phase 2");
-            phase2_cli::combine(
-                &phase2_opts.setups[setup.setup_id].initial_query_filename,
-                &phase2_opts.setups[setup.setup_id].initial_full_filename,
+            phase2_cli::combine::<E>(
+                &phase2_opts.setups[setup_index].initial_query_filename,
+                &phase2_opts.setups[setup_index].initial_full_filename,
                 setup_filename!(RESPONSE_LIST_FILENAME, setup.setup_id),
                 setup_filename!(COMBINED_FILENAME, setup.setup_id),
                 false,
@@ -505,27 +508,27 @@ impl Control {
                 COMBINED_NEW_CHALLENGE_HASH_FILENAME,
                 setup.setup_id
             ))?;
-            phase2_cli::new_challenge(
+            phase2_cli::new_challenge::<E>(
                 setup_filename!(NEW_CHALLENGE_FILENAME, setup.setup_id),
                 setup_filename!(NEW_CHALLENGE_HASH_FILENAME, setup.setup_id),
                 setup_filename!(NEW_CHALLENGE_LIST_FILENAME, setup.setup_id),
-                phase2_opts.setups[setup.setup_id].chunk_size,
-                &phase2_opts.setups[setup.setup_id].phase1_filename,
-                phase2_opts.setups[setup.setup_id].phase1_powers,
-                &phase2_opts.setups[setup.setup_id].circuit_filename,
+                phase2_opts.setups[setup_index].chunk_size,
+                &phase2_opts.setups[setup_index].phase1_filename,
+                phase2_opts.setups[setup_index].phase1_powers,
+                &phase2_opts.setups[setup_index].circuit_filename,
             );
-            phase2_cli::combine(
-                phase2_opts.setups[setup.setup_id]
+            phase2_cli::combine::<E>(
+                phase2_opts.setups[setup_index]
                     .initial_query_filename
                     .as_ref(),
-                phase2_opts.setups[setup.setup_id]
+                phase2_opts.setups[setup_index]
                     .initial_full_filename
                     .as_ref(),
                 setup_filename!(NEW_CHALLENGE_LIST_FILENAME, setup.setup_id),
                 setup_filename!(INITIAL_CHALLENGE_FILENAME, setup.setup_id),
                 true,
             );
-            phase2_cli::verify(
+            phase2_cli::verify::<E>(
                 setup_filename!(INITIAL_CHALLENGE_FILENAME, setup.setup_id),
                 setup_filename!(INITIAL_CHALLENGE_HASH_FILENAME, setup.setup_id),
                 DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
@@ -544,7 +547,7 @@ impl Control {
         Ok(())
     }
 
-    async fn new_round<E: Pairing>(
+    async fn new_round(
         &self,
         expected_participants: &[ParticipantId],
         new_participants: &[ParticipantId],
@@ -578,8 +581,31 @@ impl Control {
         transcript.rounds.push(ceremony.clone());
         if verify_transcript {
             info!("Verifying transcript");
-            for setup in ceremony.setups.iter() {
-                self.combine_and_verify_round::<E>(&ceremony, setup).await?;
+            for (setup_index, setup) in ceremony.setups.iter().enumerate() {
+                match setup.parameters.curve_kind.as_str() {
+                    "bw6" => {
+                        self.combine_and_verify_round::<BW6_761>(&ceremony, setup, setup_index)
+                            .await?
+                    }
+                    "bls12_377" => {
+                        self.combine_and_verify_round::<Bls12_377>(&ceremony, setup, setup_index)
+                            .await?
+                    }
+                    "mnt4_753" => {
+                        self.combine_and_verify_round::<MNT4_753>(&ceremony, setup, setup_index)
+                            .await?
+                    }
+                    "mnt6_753" => {
+                        self.combine_and_verify_round::<MNT6_753>(&ceremony, setup, setup_index)
+                            .await?
+                    }
+                    _ => {
+                        return Err(VerifyTranscriptError::UnsupportedCurveKindError(
+                            setup.parameters.curve_kind.clone(),
+                        )
+                        .into())
+                    }
+                }
             }
             info!("Verified transcript");
         }
@@ -637,7 +663,142 @@ impl Control {
         Ok(())
     }
 
-    async fn apply_beacon<E: Pairing>(
+    async fn apply_beacon_to_setup<E: Pairing>(
+        &self,
+        ceremony: &Ceremony,
+        setup: &Setup,
+        setup_index: usize,
+        beacon_hash: &[u8],
+    ) -> Result<()>
+    where
+        E::G1Affine: Neg<Output = E::G1Affine>,
+    {
+        self.combine_and_verify_round::<E>(&ceremony, setup, setup_index)
+            .await?;
+
+        let parameters = create_full_parameters::<E>(&setup.parameters)?;
+        remove_file_if_exists(setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id))?;
+        remove_file_if_exists(setup_filename!(
+            COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+            setup.setup_id
+        ))?;
+        remove_file_if_exists(setup_filename!(
+            COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+            setup.setup_id
+        ))?;
+        let rng = derive_rng_from_seed(&from_slice(&beacon_hash));
+        if self.phase == Phase::Phase1 {
+            phase1_cli::contribute(
+                setup_filename!(COMBINED_FILENAME, setup.setup_id),
+                setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                    setup.setup_id
+                ),
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+                    setup.setup_id
+                ),
+                DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                BatchExpMode::Auto,
+                &parameters,
+                rng,
+            );
+        } else {
+            phase2_cli::contribute::<E>(
+                setup_filename!(COMBINED_FILENAME, setup.setup_id),
+                setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                    setup.setup_id
+                ),
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+                    setup.setup_id
+                ),
+                DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                BatchExpMode::Direct,
+                rng,
+            );
+        }
+        info!("applied beacon, verifying");
+        remove_file_if_exists(setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id))?;
+        remove_file_if_exists(setup_filename!(
+            COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+            setup.setup_id
+        ))?;
+        remove_file_if_exists(setup_filename!(
+            COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+            setup.setup_id
+        ))?;
+        remove_file_if_exists(setup_filename!(
+            COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME,
+            setup.setup_id
+        ))?;
+        if self.phase == Phase::Phase1 {
+            phase1_cli::transform_pok_and_correctness(
+                setup_filename!(COMBINED_FILENAME, setup.setup_id),
+                setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
+                DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                    setup.setup_id
+                ),
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+                    setup.setup_id
+                ),
+                DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+                    setup.setup_id
+                ),
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME,
+                    setup.setup_id
+                ),
+                SubgroupCheckMode::Auto,
+                false, // ratio check
+                &parameters,
+            );
+            phase1_cli::transform_ratios(
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+                    setup.setup_id
+                ),
+                DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                &parameters,
+            );
+        } else {
+            phase2_cli::verify::<E>(
+                setup_filename!(COMBINED_FILENAME, setup.setup_id),
+                setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
+                DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
+                    setup.setup_id
+                ),
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
+                    setup.setup_id
+                ),
+                DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+                    setup.setup_id
+                ),
+                setup_filename!(
+                    COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME,
+                    setup.setup_id
+                ),
+                SubgroupCheckMode::Auto,
+                false,
+            );
+        }
+        Ok(())
+    }
+
+    async fn apply_beacon(
         &self,
         beacon_hash: &str,
         expected_participants: &[ParticipantId],
@@ -664,130 +825,54 @@ impl Control {
             .into());
         }
         let mut final_hashes = vec![];
-        for setup in ceremony.setups.iter() {
+        for (setup_index, setup) in ceremony.setups.iter().enumerate() {
             // Generate combined file from transcript
             // Verify result if running phase 1
-            self.combine_and_verify_round::<E>(&ceremony, setup).await?;
+            match setup.parameters.curve_kind.as_str() {
+                "bw6" => {
+                    self.apply_beacon_to_setup::<BW6_761>(
+                        &ceremony,
+                        setup,
+                        setup_index,
+                        &beacon_hash,
+                    )
+                    .await?
+                }
+                "bls12_377" => {
+                    self.apply_beacon_to_setup::<Bls12_377>(
+                        &ceremony,
+                        setup,
+                        setup_index,
+                        &beacon_hash,
+                    )
+                    .await?
+                }
+                "mnt4_753" => {
+                    self.apply_beacon_to_setup::<MNT4_753>(
+                        &ceremony,
+                        setup,
+                        setup_index,
+                        &beacon_hash,
+                    )
+                    .await?
+                }
+                "mnt6_753" => {
+                    self.apply_beacon_to_setup::<MNT6_753>(
+                        &ceremony,
+                        setup,
+                        setup_index,
+                        &beacon_hash,
+                    )
+                    .await?
+                }
+                _ => {
+                    return Err(VerifyTranscriptError::UnsupportedCurveKindError(
+                        setup.parameters.curve_kind.clone(),
+                    )
+                    .into())
+                }
+            }
 
-            let parameters = create_full_parameters::<E>(&setup.parameters)?;
-            remove_file_if_exists(setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id))?;
-            remove_file_if_exists(setup_filename!(
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
-                setup.setup_id
-            ))?;
-            remove_file_if_exists(setup_filename!(
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
-                setup.setup_id
-            ))?;
-            let rng = derive_rng_from_seed(&from_slice(&beacon_hash));
-            if self.phase == Phase::Phase1 {
-                phase1_cli::contribute(
-                    setup_filename!(COMBINED_FILENAME, setup.setup_id),
-                    setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
-                        setup.setup_id
-                    ),
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
-                        setup.setup_id
-                    ),
-                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                    BatchExpMode::Auto,
-                    &parameters,
-                    rng,
-                );
-            } else {
-                phase2_cli::contribute(
-                    setup_filename!(COMBINED_FILENAME, setup.setup_id),
-                    setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
-                        setup.setup_id
-                    ),
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
-                        setup.setup_id
-                    ),
-                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                    BatchExpMode::Direct,
-                    rng,
-                );
-            }
-            info!("applied beacon, verifying");
-            remove_file_if_exists(setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id))?;
-            remove_file_if_exists(setup_filename!(
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
-                setup.setup_id
-            ))?;
-            remove_file_if_exists(setup_filename!(
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
-                setup.setup_id
-            ))?;
-            remove_file_if_exists(setup_filename!(
-                COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME,
-                setup.setup_id
-            ))?;
-            if self.phase == Phase::Phase1 {
-                phase1_cli::transform_pok_and_correctness(
-                    setup_filename!(COMBINED_FILENAME, setup.setup_id),
-                    setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
-                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
-                        setup.setup_id
-                    ),
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
-                        setup.setup_id
-                    ),
-                    DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
-                        setup.setup_id
-                    ),
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME,
-                        setup.setup_id
-                    ),
-                    SubgroupCheckMode::Auto,
-                    false, // ratio check
-                    &parameters,
-                );
-                phase1_cli::transform_ratios(
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
-                        setup.setup_id
-                    ),
-                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                    &parameters,
-                );
-            } else {
-                phase2_cli::verify(
-                    setup_filename!(COMBINED_FILENAME, setup.setup_id),
-                    setup_filename!(COMBINED_HASH_FILENAME, setup.setup_id),
-                    DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_FILENAME,
-                        setup.setup_id
-                    ),
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
-                        setup.setup_id
-                    ),
-                    DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
-                        setup.setup_id
-                    ),
-                    setup_filename!(
-                        COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_HASH_FILENAME,
-                        setup.setup_id
-                    ),
-                    SubgroupCheckMode::Auto,
-                    false,
-                );
-            }
             let response_hash_from_file = read_hash_from_file(setup_filename!(
                 COMBINED_VERIFIED_POK_AND_CORRECTNESS_HASH_FILENAME,
                 setup.setup_id
@@ -899,88 +984,21 @@ async fn main() {
                 .await
                 .expect("Should have run command successfully")
         }
-        Command::NewRound(opts) => match main_opts.curve.as_str() {
-            "bw6" => {
-                control
-                    .new_round::<BW6_761>(
-                        &opts.expected_participant,
-                        &opts.new_participant,
-                        opts.verify_transcript,
-                        !opts.do_not_send_shutdown_signal,
-                        opts.shutdown_delay_time_in_secs,
-                        opts.publish,
-                    )
-                    .await
-                    .expect("Should have run command successfully");
-            }
-            "bls12_377" => {
-                control
-                    .new_round::<Bls12_377>(
-                        &opts.expected_participant,
-                        &opts.new_participant,
-                        opts.verify_transcript,
-                        !opts.do_not_send_shutdown_signal,
-                        opts.shutdown_delay_time_in_secs,
-                        opts.publish,
-                    )
-                    .await
-                    .expect("Should have run command successfully");
-            }
-            "mnt4_753" => {
-                control
-                    .new_round::<MNT4_753>(
-                        &opts.expected_participant,
-                        &opts.new_participant,
-                        opts.verify_transcript,
-                        !opts.do_not_send_shutdown_signal,
-                        opts.shutdown_delay_time_in_secs,
-                        opts.publish,
-                    )
-                    .await
-                    .expect("Should have run command successfully");
-            }
-            "mnt6_753" => {
-                control
-                    .new_round::<MNT6_753>(
-                        &opts.expected_participant,
-                        &opts.new_participant,
-                        opts.verify_transcript,
-                        !opts.do_not_send_shutdown_signal,
-                        opts.shutdown_delay_time_in_secs,
-                        opts.publish,
-                    )
-                    .await
-                    .expect("Should have run command successfully");
-            }
-            c => panic!("Unsupported curve {}", c),
-        },
-        Command::ApplyBeacon(opts) => match main_opts.curve.as_str() {
-            "bw6" => {
-                control
-                    .apply_beacon::<BW6_761>(&opts.beacon_hash, &opts.expected_participant)
-                    .await
-                    .expect("Should have run command successfully");
-            }
-            "bls12_377" => {
-                control
-                    .apply_beacon::<Bls12_377>(&opts.beacon_hash, &opts.expected_participant)
-                    .await
-                    .expect("Should have run command successfully");
-            }
-            "mnt4_753" => {
-                control
-                    .apply_beacon::<MNT4_753>(&opts.beacon_hash, &opts.expected_participant)
-                    .await
-                    .expect("Should have run command successfully");
-            }
-            "mnt6_753" => {
-                control
-                    .apply_beacon::<MNT6_753>(&opts.beacon_hash, &opts.expected_participant)
-                    .await
-                    .expect("Should have run command successfully");
-            }
-            c => panic!("Unsupported curve {}", c),
-        },
+        Command::NewRound(opts) => control
+            .new_round(
+                &opts.expected_participant,
+                &opts.new_participant,
+                opts.verify_transcript,
+                !opts.do_not_send_shutdown_signal,
+                opts.shutdown_delay_time_in_secs,
+                opts.publish,
+            )
+            .await
+            .expect("Should have run command successfully"),
+        Command::ApplyBeacon(opts) => control
+            .apply_beacon(&opts.beacon_hash, &opts.expected_participant)
+            .await
+            .expect("Should have run command successfully"),
         Command::RemoveLastContribution(opts) => {
             control
                 .remove_last_contribution(&opts.participant_id, opts.setup_index, opts.chunk_index)
