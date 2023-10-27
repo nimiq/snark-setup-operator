@@ -77,14 +77,14 @@ jobs:
           profile: minimal
           toolchain: ${{ matrix.rust }}
           override: true
+      
+      - name: Setup node
+        uses: actions/setup-node@v1
+        with:
+          node-version: 18
 
-      - name: Install node and run e2e
+      - name: Run e2e
         run: |
-          curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.36.0/install.sh | bash
-          export NVM_DIR="$HOME/.nvm"
-          . "$NVM_DIR/nvm.sh"
-          . "$NVM_DIR/bash_completion"
-          nvm install node
           cd e2e
           ./e2e.sh
           ./e2ephase2.sh
