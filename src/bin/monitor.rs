@@ -4,7 +4,7 @@ use snark_setup_operator::{
     error::MonitorError,
 };
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use chrono::{DateTime, Duration, Utc};
 use gumdrop::Options;
 use std::collections::HashSet;
@@ -70,8 +70,8 @@ impl Monitor {
         let data = response.text().await?;
         let ceremony: Ceremony = serde_json::from_str::<Response<Ceremony>>(&data)?.result;
 
-        self.check_progress(&ceremony)?;
         self.check_all_done(&ceremony)?;
+        self.check_progress(&ceremony)?;
         self.check_timeout(&ceremony)?;
         // self.show_finished_chunks(&ceremony)?;
 
@@ -138,6 +138,10 @@ impl Monitor {
     }
 
     fn check_all_done(&mut self, ceremony: &Ceremony) -> Result<()> {
+        if ceremony.version == self.last_ceremony_version {
+            return Ok(());
+        }
+
         let participant_ids: HashSet<_> = ceremony
             .contributor_ids
             .iter()

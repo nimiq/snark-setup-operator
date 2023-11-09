@@ -13,6 +13,7 @@ use secrecy::{ExposeSecret, SecretString, SecretVec};
 use snark_setup_operator::data_structs::{Attestation, NimiqSetupKeys};
 use snark_setup_operator::utils::{encrypt, trim_newline, NIMIQ_SETUP_PERSONALIZATION};
 use std::io::{self, Write};
+use std::path::Path;
 
 #[derive(Debug, Options, Clone)]
 pub struct GenerateOpts {
@@ -25,6 +26,10 @@ pub struct GenerateOpts {
 
 fn main() {
     let opts: GenerateOpts = GenerateOpts::parse_args_default_or_exit();
+    let path = Path::new(&opts.keys_file);
+    if path.exists() {
+        panic!("Error, keys file already exists.");
+    }
     let mut file = std::fs::File::create(&opts.keys_file).expect("Should have created keys file");
     let (entropy, attestation_message, nimiq_encryptor, private_key_encryptor) = if !opts
         .unsafe_passphrase

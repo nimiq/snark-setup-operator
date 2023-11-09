@@ -41,16 +41,19 @@ use setup_utils::{
     DEFAULT_CONTRIBUTE_CHECK_INPUT_CORRECTNESS, DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS,
     DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
 };
-use snark_setup_operator::utils::{string_to_phase, Phase};
+
 use std::cmp::min;
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, Neg};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::SeqCst};
 use std::sync::RwLock;
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 use url::Url;
+
+use snark_setup_operator::utils::{string_to_phase, Phase};
 
 const DELAY_AFTER_ERROR_DURATION_SECS: i64 = 60;
 const DELAY_WAIT_FOR_PIPELINE_SECS: i64 = 5;
@@ -284,7 +287,7 @@ impl Contribute {
         progress_bar.enable_steady_tick(1000);
         progress_bar.set_style(progress_style);
         progress_bar.println(
-            "Contributing! Please unmount and remove the USB drive containing your keys now.",
+            "*** Contributing...\n*** If your keys are located in a USB drive, please unmount, otherwise you don't have to do anything.",
         );
         progress_bar.set_message("Getting initial data from the server...");
         let max_locks_from_ceremony;
@@ -487,7 +490,7 @@ impl Contribute {
 
     async fn status_updater(&self, progress_bar: ProgressBar) -> Result<bool> {
         if EXIT_SIGNAL.load(SeqCst) > 0 {
-            progress_bar.println("Exit detected, handling chunks in buffer. If there was a problem, please contact the coordinator for help. If you got notified by the coordinator, please destroy the USB drive containing your keys. Press 10 times to force quit.");
+            progress_bar.println("Exit detected, handling chunks in buffer. If there was a problem, please contact the coordinator for help. If you got notified by the coordinator, please destroy your keys. Press 10 times to force quit.");
             progress_bar.set_message("");
             progress_bar.set_length(0);
             progress_bar.finish();
@@ -515,13 +518,24 @@ impl Contribute {
             ));
             progress_bar.set_position((num_chunks - num_non_contributed_chunks) as u64);
         } else if num_non_contributed_chunks == 0 {
-            info!("Successfully contributed, thank you for participation! Waiting to see if you're still needed... Don't turn this off! ");
+            info!("Don't turn this off yet, you are needed until the end of your round.");
             progress_bar.set_position(num_chunks as u64);
             if !self.exit_when_finished_contributing && !chunk_info.shutdown_signal {
-                progress_bar.set_message("Successfully contributed! Don't turn this off yet, you might still be needed. Thank you for participating!");
+                progress_bar.set_message(
+                    "Don't turn this off yet, you are needed until the end of your round.",
+                );
             } else {
-                progress_bar.set_message("Successfully contributed! Please destroy the USB drive containing your keys. Thank you for participating!");
+                progress_bar.set_message("\nSuccessfully contributed!");
                 progress_bar.finish();
+
+                let mut stdout = StandardStream::stdout(ColorChoice::Always);
+                stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)))?;
+                println!("**** IMPORTANT:");
+                stdout.reset()?;
+                println!("*** If your keys are located in a USB drive, please unmount and destroy it. Otherwise, make sure you destroy your keys.");
+                println!("*** Please publish your nimiq.attestation file in https://github.com/nimiq/ceremony-attestations by creating a new issue!");
+                println!("*** If you use precompiled binaries, be sure to mention you've verified the binary hashes posted on the release page match the downloaded files.\nThank you for participating!");
+
                 return Ok(true);
             }
         } else {
