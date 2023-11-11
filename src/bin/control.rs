@@ -388,15 +388,19 @@ impl Control {
         let chunk_ids = ceremony
             .setups
             .iter_mut()
-            .map(|setup| {
-                setup.chunks.iter_mut().filter_map(|c| {
-                    if participant_id.is_none() || c.lock_holder == participant_id {
-                        c.lock_holder = None;
-                        Some(c.unique_chunk_id.clone())
-                    } else {
-                        None
-                    }
-                })
+            .flat_map(|setup| {
+                setup
+                    .chunks
+                    .iter_mut()
+                    .filter_map(|c| {
+                        if participant_id.is_none() || c.lock_holder == participant_id {
+                            c.lock_holder = None;
+                            Some(c.unique_chunk_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
         info!("chunk IDs unlocked: {:?}", chunk_ids);
