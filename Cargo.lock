@@ -3409,6 +3409,7 @@ dependencies = [
  "ark-bls12-381",
  "ark-bw6-761",
  "ark-ec",
+ "ark-ff",
  "ark-mnt4-753",
  "ark-mnt6-753",
  "azure_core",
