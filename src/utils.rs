@@ -54,6 +54,8 @@ pub const CHALLENGE_FILENAME: &str = "challenge";
 pub const CHALLENGE_HASH_FILENAME: &str = "challenge.hash";
 pub const RESPONSE_HASH_FILENAME: &str = "response.hash";
 pub const NEW_CHALLENGE_PREFIX_FOR_NEXT_ROUND: &str = "new_challenge";
+pub const VERIFYING_KEY: &str = "verifying_key.bin";
+pub const PROVING_KEY: &str = "proving_key.bin";
 
 #[macro_export]
 macro_rules! setup_filename {

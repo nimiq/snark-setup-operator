@@ -3412,6 +3412,7 @@ dependencies = [
  "ark-ff",
  "ark-mnt4-753",
  "ark-mnt6-753",
+ "ark-serialize",
  "azure_core",
  "azure_storage",
  "azure_storage_blobs",
