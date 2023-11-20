@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use ark_bls12_377::Bls12_377;
 use ark_bw6_761::BW6_761;
 use ark_ec::pairing::Pairing;
-use ark_ff::FftField;
 use ark_mnt4_753::MNT4_753;
 use ark_mnt6_753::MNT6_753;
 use gumdrop::Options;
