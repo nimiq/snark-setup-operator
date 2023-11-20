@@ -231,13 +231,6 @@ async fn run<E: Pairing>(opts: &NewSetupOpts, key_pair: &[u8]) -> Result<()>
 where
     E::G1Affine: Neg<Output = E::G1Affine>,
 {
-    if opts.powers > E::ScalarField::TWO_ADICITY as usize {
-        return Err(anyhow!(
-            "Cannot create radix-2 domain for number of powers (maximum powers {}).",
-            E::ScalarField::TWO_ADICITY
-        ));
-    }
-
     let server_url = Url::parse(opts.server_url.as_str())?.join("ceremony")?;
     let data = reqwest::get(server_url.as_str())
         .await?
