@@ -471,15 +471,15 @@ pub fn read_keys(
 pub fn collect_processor_data() -> Result<Vec<ProcessorData>> {
     cfg_if::cfg_if! {
         if #[cfg(not(target_arch = "aarch64"))] {
-            use sysinfo::{ProcessorExt, System, SystemExt};
+            use sysinfo::{CpuExt, System, SystemExt};
             let s = System::new();
             let processors = s
-                .get_processors()
+                .cpus()
                 .iter()
                 .map(|p| ProcessorData {
-                    name: p.get_name().to_string(),
-                    brand: p.get_brand().to_string(),
-                    frequency: p.get_frequency().to_string(),
+                    name: p.name().to_string(),
+                    brand: p.brand().to_string(),
+                    frequency: p.frequency().to_string(),
                 })
                 .collect();
             Ok(processors)
