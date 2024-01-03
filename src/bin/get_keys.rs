@@ -91,7 +91,7 @@ impl GetKeys {
             .expect(&format!("unable to open new {:?} file", proving_key_path));
         parameters_after
             .params
-            .serialize_compressed(&mut f)
+            .serialize_uncompressed(&mut f)
             .expect("unable to serialize proving key");
         f.sync_all()
             .expect(&format!("unable to flush {:?}", proving_key_path));
@@ -101,7 +101,7 @@ impl GetKeys {
         parameters_after
             .params
             .vk
-            .serialize_compressed(&mut f)
+            .serialize_uncompressed(&mut f)
             .expect("unable to serialize verifying key");
         f.sync_all()
             .expect(&format!("unable to flush {:?}", verifying_key_path));
