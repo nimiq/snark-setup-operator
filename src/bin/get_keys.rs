@@ -12,7 +12,9 @@ use setup_utils::{SubgroupCheckMode, DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS};
 use snark_setup_operator::data_structs::Setup;
 use snark_setup_operator::setup_filename;
 use snark_setup_operator::transcript_data_structs::Transcript;
-use snark_setup_operator::utils::{COMBINED_NEW_CHALLENGE_FILENAME, PROVING_KEY, VERIFYING_KEY};
+use snark_setup_operator::utils::{
+    COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME, PROVING_KEY, VERIFYING_KEY,
+};
 use snark_setup_operator::{error::VerifyTranscriptError, utils::remove_file_if_exists};
 use std::ops::Neg;
 use std::{fs::File, io::Read};
@@ -68,7 +70,10 @@ impl GetKeys {
     where
         E::G1Affine: Neg<Output = E::G1Affine>,
     {
-        let response_filename = setup_filename!(COMBINED_NEW_CHALLENGE_FILENAME, setup.setup_id);
+        let response_filename = setup_filename!(
+            COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+            setup.setup_id
+        );
 
         let response_contents =
             std::fs::read(response_filename).expect("should have read response");
