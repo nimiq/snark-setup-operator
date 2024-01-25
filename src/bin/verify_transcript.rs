@@ -267,14 +267,12 @@ impl TranscriptVerifier {
                     .as_ref()
                     .expect("Phase2 options not used while running phase2 verification");
                 let chunk_size = setup.parameters.chunk_size;
-                let num_powers = setup.parameters.power;
                 phase2_cli::new_challenge::<E>(
                     setup_filename!(NEW_CHALLENGE_FILENAME, setup.setup_id),
                     setup_filename!(NEW_CHALLENGE_HASH_FILENAME, setup.setup_id),
                     setup_filename!(NEW_CHALLENGE_LIST_FILENAME, setup.setup_id),
                     chunk_size,
                     &phase2_options.setups[setup_id].phase1_filename,
-                    num_powers,
                     &phase2_options.setups[setup_id].circuit_filename,
                 );
                 // Generate full initial contribution to later check consistency of final contribution

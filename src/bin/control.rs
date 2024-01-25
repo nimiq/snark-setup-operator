@@ -146,8 +146,7 @@ pub struct ControlOpts {
 
 pub struct Phase2Params {
     pub chunk_size: usize,
-    pub phase1_powers: usize,
-    pub phase1_filename: String,
+    pub phase2_init_filename: String,
     pub circuit_filename: String,
     pub initial_query_filename: String,
     pub initial_full_filename: String,
@@ -170,8 +169,8 @@ impl Phase2Opts {
         for (i, setup) in ceremony.setups.iter().enumerate() {
             setups.push(Phase2Params {
                 chunk_size: setup.parameters.chunk_size,
-                phase1_powers: setup.parameters.power,
-                phase1_filename: setup_filename!(PHASE2_INIT_FILENAME, setup.setup_id).to_string(),
+                phase2_init_filename: setup_filename!(PHASE2_INIT_FILENAME, setup.setup_id)
+                    .to_string(),
                 circuit_filename: opts.circuit_filenames[i].to_string(),
                 initial_query_filename: setup_filename!(
                     opts.initial_query_filename
@@ -517,8 +516,7 @@ impl Control {
                 setup_filename!(NEW_CHALLENGE_HASH_FILENAME, setup.setup_id),
                 setup_filename!(NEW_CHALLENGE_LIST_FILENAME, setup.setup_id),
                 phase2_opts.setups[setup_index].chunk_size,
-                &phase2_opts.setups[setup_index].phase1_filename,
-                phase2_opts.setups[setup_index].phase1_powers,
+                &phase2_opts.setups[setup_index].phase2_init_filename,
                 &phase2_opts.setups[setup_index].circuit_filename,
             );
             phase2_cli::combine::<E>(

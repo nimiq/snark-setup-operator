@@ -44,7 +44,9 @@ pub struct NewSetupOpts {
     pub keys_file: String,
     #[options(help = "log2 of chunk size", required)]
     pub chunk_size: usize,
-    #[options(help = "powers", required)]
+    #[options(
+        help = "powers (only required in phase1, ignored in phase2 for compatibility reasons)"
+    )]
     pub powers: usize,
     #[options(help = "proving system", default = "groth16")]
     pub proving_system: String,
@@ -89,15 +91,15 @@ async fn upload_chunk<E: Pairing>(
     info!("Working on chunk {}", unique_chunk_id);
     let proving_system = proving_system_from_str(&opts.proving_system)?;
 
-    let parameters = Phase1Parameters::<E>::new_chunk(
-        ContributionMode::Chunked,
-        chunk_index,
-        setup.parameters.chunk_size,
-        proving_system,
-        setup.parameters.power,
-        setup.parameters.chunk_size,
-    );
     if phase == Phase::Phase1 {
+        let parameters = Phase1Parameters::<E>::new_chunk(
+            ContributionMode::Chunked,
+            chunk_index,
+            setup.parameters.chunk_size,
+            proving_system,
+            setup.parameters.power,
+            setup.parameters.chunk_size,
+        );
         remove_file_if_exists(setup_filename!(NEW_CHALLENGE_FILENAME, setup.setup_id))?;
         remove_file_if_exists(setup_filename!(NEW_CHALLENGE_HASH_FILENAME, setup.setup_id))?;
         phase1_cli::new_challenge(
@@ -247,14 +249,6 @@ where
 
     let proving_system = proving_system_from_str(&opts.proving_system)?;
     let chunk_size = 1 << opts.chunk_size;
-    let parameters = Phase1Parameters::<E>::new_chunk(
-        ContributionMode::Chunked,
-        0,
-        chunk_size,
-        proving_system,
-        opts.powers,
-        chunk_size,
-    );
     let mut setup = Setup {
         setup_id: ceremony.setups.len().to_string(),
         chunks: vec![],
@@ -269,6 +263,14 @@ where
     // phase 1 new_challenge creates one chunk per call, phase 2 new_challenge creates all chunks
     // and returns how many have been created
     let num_chunks = if phase == Phase::Phase1 {
+        let parameters = Phase1Parameters::<E>::new_chunk(
+            ContributionMode::Chunked,
+            0,
+            chunk_size,
+            proving_system,
+            opts.powers,
+            chunk_size,
+        );
         match proving_system {
             ProvingSystem::Groth16 => (parameters.powers_g1_length + chunk_size - 1) / chunk_size,
             ProvingSystem::Marlin => (parameters.powers_length + chunk_size - 1) / chunk_size,
@@ -280,7 +282,6 @@ where
             setup_filename!(NEW_CHALLENGE_LIST_FILENAME, setup.setup_id),
             chunk_size,
             setup_filename!(PHASE2_INIT_FILENAME, setup.setup_id),
-            opts.powers,
             &opts
                 .circuit_filename
                 .as_ref()

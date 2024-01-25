@@ -2469,7 +2469,7 @@ checksum = "9b2a4787296e9989611394c33f193f676704af1686e70b8f8033ab5ba9a35a94"
 [[package]]
 name = "phase1"
 version = "0.3.0"
-source = "git+https://github.com/nimiq/snark-setup#cc2d91a8496e27143595bd635590f9fd16b517ee"
+source = "git+https://github.com/nimiq/snark-setup#bd530da9804b628107e29ccd31098ed061d1cd66"
 dependencies = [
  "ark-ec",
  "ark-ff",
@@ -2490,7 +2490,7 @@ dependencies = [
 [[package]]
 name = "phase1-cli"
 version = "0.3.0"
-source = "git+https://github.com/nimiq/snark-setup#cc2d91a8496e27143595bd635590f9fd16b517ee"
+source = "git+https://github.com/nimiq/snark-setup#bd530da9804b628107e29ccd31098ed061d1cd66"
 dependencies = [
  "ark-bls12-377",
  "ark-bls12-381",
@@ -2512,7 +2512,7 @@ dependencies = [
 [[package]]
 name = "phase2"
 version = "0.3.0"
-source = "git+https://github.com/nimiq/snark-setup#cc2d91a8496e27143595bd635590f9fd16b517ee"
+source = "git+https://github.com/nimiq/snark-setup#bd530da9804b628107e29ccd31098ed061d1cd66"
 dependencies = [
  "ark-ec",
  "ark-ff",
@@ -2534,7 +2534,7 @@ dependencies = [
 [[package]]
 name = "phase2-cli"
 version = "0.3.0"
-source = "git+https://github.com/nimiq/snark-setup#cc2d91a8496e27143595bd635590f9fd16b517ee"
+source = "git+https://github.com/nimiq/snark-setup#bd530da9804b628107e29ccd31098ed061d1cd66"
 dependencies = [
  "anyhow",
  "ark-bls12-377",
@@ -2544,6 +2544,7 @@ dependencies = [
  "ark-groth16",
  "ark-mnt4-753",
  "ark-mnt6-753",
+ "ark-poly",
  "ark-relations",
  "ark-serialize",
  "ark-snark",
@@ -3281,7 +3282,7 @@ dependencies = [
 [[package]]
 name = "setup-utils"
 version = "0.3.0"
-source = "git+https://github.com/nimiq/snark-setup#cc2d91a8496e27143595bd635590f9fd16b517ee"
+source = "git+https://github.com/nimiq/snark-setup#bd530da9804b628107e29ccd31098ed061d1cd66"
 dependencies = [
  "ark-ec",
  "ark-ff",

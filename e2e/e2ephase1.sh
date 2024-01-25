@@ -32,4 +32,7 @@ echo 1 | RUST_LOG=info cargo run --release --bin contribute --no-default-feature
 echo 1 | RUST_LOG=info cargo run --release --bin contribute --no-default-features -- --unsafe-passphrase --exit-when-finished-contributing --keys-file $BASE_DIR/nimiq-verifier.keys --participation-mode verify --coordinator-url http://localhost:8080
 echo 1 | RUST_LOG=info cargo run --release --bin control -- --unsafe-passphrase --keys-file $BASE_DIR/nimiq-verifier.keys --coordinator-url http://localhost:8080 apply-beacon --beacon-hash 0000000000000000000000000000000000000000000000000000000000000000 --expected-participant 2238a626c0cbd0c3357da185c438755a2426284abfb293c664f66ce237761a07
 RUST_BACKTRACE=1 RUST_LOG=info cargo run --release --bin verify_transcript --no-default-features -- --beacon-hash 0000000000000000000000000000000000000000000000000000000000000000
-RUST_LOG=info cargo run --release --bin intermediate_transform
+RUST_LOG=info cargo run --release --bin intermediate_transform -- --setup-id 0 --circuit-filenames circuit_mnt4_753
+RUST_LOG=info cargo run --release --bin intermediate_transform -- --setup-id 1 --circuit-filenames circuit_mnt6_753
+mv circuit_mnt4_753_phase2_init setup0_phase2_init
+mv circuit_mnt6_753_phase2_init setup1_phase2_init
