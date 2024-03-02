@@ -115,6 +115,15 @@ pub struct RemoveLastContributionOpts {
 }
 
 #[derive(Debug, Options, Clone)]
+pub struct GetLastContributionPkOpts {
+    help: bool,
+    #[options(help = "setup index")]
+    pub setup_index: usize,
+    #[options(help = "chunk index")]
+    pub chunk_index: usize,
+}
+
+#[derive(Debug, Options, Clone)]
 pub struct ControlOpts {
     help: bool,
     #[options(
@@ -205,6 +214,7 @@ pub enum Command {
     NewRound(NewRoundOpts),
     ApplyBeacon(ApplyBeaconOpts),
     RemoveLastContribution(RemoveLastContributionOpts),
+    GetLastContributionPk(GetLastContributionPkOpts),
 }
 
 pub struct Control {
@@ -887,6 +897,25 @@ impl Control {
         Ok(())
     }
 
+    async fn get_last_contribution_pk(
+        &self,
+        setup_index: usize,
+        chunk_index: usize,
+    ) -> Result<ParticipantId> {
+        let ceremony = self.get_ceremony().await?;
+
+        let participant_id_from_chunk = ceremony.setups[setup_index].chunks[chunk_index]
+            .contributions
+            .last()
+            .unwrap()
+            .contributor_id
+            .as_ref()
+            .unwrap()
+            .clone();
+
+        Ok(participant_id_from_chunk)
+    }
+
     async fn remove_last_contribution(
         &self,
         expected_participant_id: &ParticipantId,
@@ -1006,6 +1035,14 @@ async fn main() {
                 .remove_last_contribution(&opts.participant_id, opts.setup_index, opts.chunk_index)
                 .await
                 .expect("Should have run command successfully");
+        }
+        Command::GetLastContributionPk(opts) => {
+            let pk = control
+                .get_last_contribution_pk(opts.setup_index, opts.chunk_index)
+                .await
+                .expect("Should have run command successfully");
+
+            println!("Public key: {}", pk);
         }
     });
 }
