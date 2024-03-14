@@ -13,3 +13,4 @@ setup*_new_challenge.hash
 snark-setup-coordinator
 .DS_Store
 .vscode
+try.sh
