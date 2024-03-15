@@ -14,3 +14,4 @@ snark-setup-coordinator
 .DS_Store
 .vscode
 try.sh
+script.sh
