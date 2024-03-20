@@ -54,6 +54,8 @@ pub enum MonitorError {
     LockTimeIsNoneError,
     #[error("Lock holder was none")]
     LockHolderIsNoneError,
+    #[error("Parameters were different between rounds: expected. Setups: {0:?}, got {1:?}")]
+    ParametersDifferentBetweenRounds(usize, usize),
 }
 
 #[derive(Debug, Error)]
