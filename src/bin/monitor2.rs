@@ -1,7 +1,7 @@
 use nimiq_keys::PublicKey;
 // use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use snark_setup_operator::{
-    data_structs::{Ceremony, Contribution, ContributionMetadata, Response, UniqueChunkId},
+    data_structs::{Ceremony, Chunk, Contribution, ContributionMetadata, Response, UniqueChunkId},
     error::VerifyTranscriptError,
 };
 
@@ -11,21 +11,6 @@ use gumdrop::Options;
 use std::collections::{HashMap, HashSet};
 use tracing::{error, info, warn};
 use url::Url;
-
-#[derive(Debug)]
-pub struct SetupContributionState {
-    finished: bool,
-    chunks_state: Vec<ChunkState>,
-}
-
-impl SetupContributionState {
-    fn new(num_chunks: usize) -> Self {
-        Self {
-            finished: false,
-            chunks_state: vec![ChunkState::EmptyState(); num_chunks],
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub enum ChunkState {
@@ -50,7 +35,25 @@ impl TryFrom<&Contribution> for ChunkState {
 }
 
 impl ChunkState {
-    fn update(&mut self, new_last_contribution: Option<&Contribution>) -> Result<()> {
+    fn unwrap_recorded_contribution_state(&self) -> (PublicKey, ContributionMetadata) {
+        match self {
+            ChunkState::RecordedState {
+                last_contributor,
+                metadata,
+            } => {
+                return (last_contributor.clone(), metadata.clone());
+            }
+            ChunkState::EmptyState() => {
+                panic!("Empty chunk state");
+            }
+        }
+    }
+}
+
+impl ChunkState {
+    fn update(&mut self, new_chunk: &Chunk) -> Result<()> {
+        let new_last_contribution = new_chunk.contributions.last();
+
         match (&self, new_last_contribution) {
             (ChunkState::EmptyState(), Some(new_last_contribution)) => {
                 *self = new_last_contribution.try_into()?;
@@ -62,10 +65,25 @@ impl ChunkState {
                 },
                 Some(new_last_contribution),
             ) => {
-                let new_contribution_id = new_last_contribution.contributor_id().unwrap();
+                let new_chunk_state: ChunkState = new_last_contribution.try_into()?;
+                let (new_contributor, new_metadata) =
+                    new_chunk_state.unwrap_recorded_contribution_state();
+
+                // If chunk is pending verification for too long we log it.
+                if last_contributor == &new_contributor
+                    && metadata.contributed_time.is_some()
+                    && metadata.verified_time.is_none()
+                    && metadata.contributed_time == new_metadata.contributed_time
+                    && new_metadata.verified_time.is_none()
+                {
+                    warn!(
+                        "Chunk is pending verification! ChunkID: {} Contributor: {}", // TODO dynamic threshold!
+                        new_chunk.unique_chunk_id, new_contributor
+                    );
+                }
 
                 // Update last contribution.
-                *self = new_last_contribution.try_into()?;
+                *self = new_chunk_state;
             }
             (ChunkState::RecordedState { .. }, None) => {
                 // All chunk contributions were deleted.
@@ -78,21 +96,158 @@ impl ChunkState {
     }
 }
 
+#[derive(Debug)]
+pub struct SetupContributionState {
+    finished: bool,
+    chunks_state: Vec<ChunkState>,
+}
+
+impl SetupContributionState {
+    pub fn new(num_chunks: usize) -> Self {
+        Self {
+            finished: false,
+            chunks_state: vec![ChunkState::EmptyState(); num_chunks],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ParticipantState {
+    contributed_chunks_counter: usize,
+    last_contribution: (UniqueChunkId, DateTime<Utc>),
+}
+
+impl ParticipantState {
+    pub fn new(unique_chunk_id: UniqueChunkId, contribution_time: DateTime<Utc>) -> Self {
+        Self {
+            contributed_chunks_counter: 1,
+            last_contribution: (unique_chunk_id, contribution_time),
+        }
+    }
+
+    pub fn reset_counter(&mut self) {
+        self.contributed_chunks_counter = 0;
+    }
+
+    pub fn update_participant_contributions_state(
+        &mut self,
+        unique_chunk_id: &UniqueChunkId,
+        contribution_time: DateTime<Utc>,
+    ) -> &Self {
+        if self.last_contribution.1 < contribution_time {
+            self.last_contribution = (unique_chunk_id.clone(), contribution_time);
+        }
+        self.contributed_chunks_counter += 1;
+
+        self
+    }
+
+    pub fn is_finished_contributing(&self, total_chunks: usize) -> bool {
+        self.contributed_chunks_counter == total_chunks
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ParticipantsContributionState {
+    /// The participants contribution state including the last contribution time
+    /// and chunk as well as the total chunks contributed so far.
+    current_state: HashMap<PublicKey, ParticipantState>,
+    /// The participants contribution state of the last ceremony version.
+    /// This is needed to understand if a participant is stuck on the same chunk for too long
+    last_ceremony_version_state: HashMap<PublicKey, ParticipantState>,
+}
+
+impl ParticipantsContributionState {
+    /// This copies the backs up the state to the `last_ceremony_iteration_state` and resets
+    /// the chunks contribution counters on the current state.
+    /// This function must be called before applying any chunk from a new ceremony version.
+    pub fn new_ceremony_update(&mut self, participant_ids: &HashSet<PublicKey>) {
+        self.last_ceremony_version_state = self.current_state.clone();
+        for participant_id in participant_ids {
+            if let Some(state) = self.current_state.get_mut(participant_id) {
+                state.reset_counter();
+            }
+        }
+    }
+
+    /// Updates the current participants state with the new chunk contributions data.
+    /// This assumes that the counters have been reset and the old state has been copied
+    /// before updating with the first chunk.
+    pub fn update(&mut self, new_chunk: &Chunk, total_chunks: usize) {
+        // Update last contribution.
+        // If it's the first contribution or the last one we log it.
+        new_chunk
+            .contributions
+            .iter()
+            .filter_map(|c| match (c.contributor_id, c.metadata.as_ref()) {
+                (Some(contributor_id), Some(metadata)) => {
+                    if let Some(contribution_time) = metadata.contributed_time {
+                        return Some((contributor_id, contribution_time));
+                    }
+                    None
+                }
+                (_, _) => None,
+            })
+            .for_each(|(contributor, contribution_time)| {
+                let new_participant_state = self
+                    .current_state
+                    .entry(contributor)
+                    .or_insert_with(|| {
+                        info!("New participant started contributing! {}", contributor);
+
+                        ParticipantState::new(
+                            new_chunk.unique_chunk_id.clone(),
+                            contribution_time.clone(),
+                        )
+                    })
+                    .update_participant_contributions_state(
+                        &new_chunk.unique_chunk_id,
+                        contribution_time,
+                    );
+
+                if new_participant_state.is_finished_contributing(total_chunks) {
+                    info!("Participant finished contributing! {}", contributor);
+                }
+            });
+    }
+
+    /// Logs all the paxs that are on the same last contribution as in the previous iteration.
+    /// This should only be called after applying all chunks.
+    pub fn check_for_stuck_paxs(&self, participant_ids: &HashSet<PublicKey>, total_chunks: usize) {
+        for participant_id in participant_ids.iter() {
+            let old_state = self.last_ceremony_version_state.get(participant_id);
+            let new_state = self.current_state.get(participant_id);
+            match (old_state, new_state) {
+                (Some(old_state), Some(new_state)) => {
+                    if !new_state.is_finished_contributing(total_chunks)
+                        && new_state.last_contribution == old_state.last_contribution
+                    {
+                        warn!("Participant is stuck! {}", participant_id); // TODO dynamic threshold.
+                    }
+                }
+                (_, _) => {}
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct RoundState {
+    /// The total number of chunks of the ceremony.
+    total_chunks: usize,
+
     /// The setup and chunks contribution state.
     pub setups_contribution_state: Vec<SetupContributionState>,
 
-    /// Paxs that have started contributing and are not finished yet.
-    pub paxs_last_contribution: HashMap<PublicKey, UniqueChunkId>,
-    /// Paxs that have finished contributing to all chunks.
-    pub paxs_finished_contribution: HashSet<PublicKey>,
+    /// Alls paxs that have started contributing and their last contribution data.
+    pub paxs_contribution_state: ParticipantsContributionState,
 }
 
 impl RoundState {
     fn init(&mut self, ceremony: &Ceremony) {
         *self = Self::default();
         ceremony.setups.iter().for_each(|setup| {
+            self.total_chunks += setup.chunks.len();
             self.setups_contribution_state
                 .push(SetupContributionState::new(setup.chunks.len()))
         });
@@ -105,8 +260,7 @@ impl RoundState {
                 *setup_state = SetupContributionState::new(setup_state.chunks_state.len())
             });
 
-        self.paxs_last_contribution = HashMap::new();
-        self.paxs_finished_contribution = HashSet::new();
+        self.paxs_contribution_state = ParticipantsContributionState::default();
     }
 
     /// Returns true if the current round is complete.
@@ -141,12 +295,16 @@ impl RoundState {
         }
     }
 
-    fn update_setups_state(&mut self, ceremony: &Ceremony) -> Result<bool> {
+    fn update_round_state(&mut self, ceremony: &Ceremony) -> Result<bool> {
         let participant_ids: HashSet<_> = ceremony
             .contributor_ids
             .iter()
             .map(|pk| pk.clone())
             .collect();
+
+        // Prepares the participants state for a new ceremony version.
+        self.paxs_contribution_state
+            .new_ceremony_update(&participant_ids);
 
         let mut is_round_complete = true;
         for (i, setup_state) in self.setups_contribution_state.iter_mut().enumerate() {
@@ -159,25 +317,27 @@ impl RoundState {
                 .iter_mut()
                 .enumerate()
                 .for_each(|(j, chunk_state)| {
-                    chunk_state
-                        .update(new_chunks[j].contributions.last())
-                        .unwrap();
+                    let new_chunk = &new_chunks[j];
 
-                    // TODO Update last contribution and if new entry then log started contributing.
-                    // TODO Update paxs is stuck on the same last contribution for too long.
-                    // TODO Update finished pax and log
+                    chunk_state.update(new_chunk).unwrap();
+
+                    // Update participants last and total amount of contribution.
+                    self.paxs_contribution_state
+                        .update(new_chunk, self.total_chunks);
 
                     if setup_finished {
-                        let verified_participant_ids_in_chunk: HashSet<_> = new_chunks[j]
+                        let verified_participant_ids_in_chunk: HashSet<_> = new_chunk
                             .contributions
                             .iter()
-                            .filter(|c| c.verified)
-                            .filter_map(|c| c.contributor_id)
+                            .filter_map(
+                                |c: &Contribution| if c.verified { c.contributor_id } else { None },
+                            )
                             .collect();
-                        if participant_ids.len() > verified_participant_ids_in_chunk.len()
-                            && !participant_ids
-                                .iter()
-                                .all(|p| verified_participant_ids_in_chunk.contains(p))
+
+                        if participant_ids
+                            .difference(&verified_participant_ids_in_chunk)
+                            .count()
+                            > 0
                         {
                             setup_finished = false;
                         }
@@ -186,6 +346,12 @@ impl RoundState {
             setup_state.finished = setup_finished;
 
             is_round_complete &= setup_state.finished;
+        }
+
+        // Log participants that are stuck on the same contribution.
+        if !is_round_complete {
+            self.paxs_contribution_state
+                .check_for_stuck_paxs(&participant_ids, self.total_chunks);
         }
 
         Ok(is_round_complete)
@@ -296,7 +462,7 @@ impl Monitor {
     }
 
     pub fn update_setups_chunks_state(&mut self, ceremony: &Ceremony) -> Result<()> {
-        let is_round_complete = self.round_state.update_setups_state(ceremony)?;
+        let is_round_complete = self.round_state.update_round_state(ceremony)?;
         if is_round_complete {
             info!("Round {}: All setups are complete!", self.round);
         }
