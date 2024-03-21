@@ -152,12 +152,9 @@ impl RoundState {
 
             rayon::scope(|s| {
                 s.spawn(|_| {
-                    ceremony.setups.iter().enumerate().for_each(|(j, _)| {
-                        let new_chunk = &new_chunks[j];
-
+                    new_chunks.iter().for_each(|new_chunk| {
                         // Update participants last and total amount of contribution.
-                        self.paxs_contribution_state
-                            .update(new_chunk, self.total_chunks);
+                        self.paxs_contribution_state.update(new_chunk);
                     });
                 });
                 s.spawn(|_| {
@@ -211,6 +208,7 @@ impl RoundState {
                 ceremony_update,
                 last_contribution_timeout,
             );
+            // info!("Debug: === Finished monitoring update ===");
         } else {
             info!("Round {}: All setups are complete!", self.round);
         }
@@ -227,16 +225,16 @@ pub struct MonitorOpts {
         default = "http://localhost:8080"
     )]
     pub coordinator_url: String,
-    #[options(help = "polling interval in minutes", default = "3")]
+    #[options(help = "polling interval in minutes", default = "1")]
     pub polling_interval: u64,
-    #[options(help = "ceremony timeout in minutes", default = "6")]
+    #[options(help = "ceremony timeout in minutes", default = "30")]
     pub ceremony_timeout: i64,
 
-    #[options(help = "chunk pending verification timeout in minutes", default = "20")]
+    #[options(help = "chunk pending verification timeout in minutes", default = "5")]
     pub pending_verification_timeout: i64,
     #[options(
         help = "participant's stuck on the same chunk timeout in minutes",
-        default = "20"
+        default = "10"
     )]
     pub last_contribution_timeout: i64,
     // #[options(help = "chunk lock timeout in minutes", default = "10")]
@@ -302,12 +300,38 @@ impl Monitor {
             self.ceremony_update = current_time;
             self.ceremony_version = ceremony.version;
         } else {
-            if self.ceremony_timeout <= elapsed {
-                warn!(
-                    "Ceremony progress is stuck at version {:?} for {:?} minutes",
-                    ceremony.version,
-                    elapsed.num_minutes()
-                );
+            if self.ceremony_timeout <= elapsed && !self.round_state.is_round_complete() {
+                let ongoing_contributions_count = self
+                    .round_state
+                    .paxs_contribution_state
+                    .get_active_participants_count(self.round_state.total_chunks);
+                let total_round_contributions = self
+                    .round_state
+                    .paxs_contribution_state
+                    .get_total_contributing_participants();
+
+                if ongoing_contributions_count > 0 {
+                    // If there's contributors that haven't finished their contribution. Either all participants
+                    // died off or this is a product of dark evil forces of darkness.
+                    error!(
+                        "Ceremony progress is stuck at version {:?} for {:?} minutes. Currently active {} {}/{} participants",
+                        ceremony.version,
+                        elapsed.num_minutes(),
+                        ongoing_contributions_count,
+                        total_round_contributions,
+                        ceremony.contributor_ids.iter().count()
+                    );
+                } else {
+                    // The round is not complete but no participant is actively contributing.
+                    // So participant that has started to contribute, has also finished.
+                    // Thus it is not an indication of a serious problem with the ceremony.
+                    warn!(
+                        "Nobody is participating for {:?} minutes. Participation count: {}/{}",
+                        elapsed.num_minutes(),
+                        total_round_contributions,
+                        ceremony.contributor_ids.iter().count()
+                    );
+                }
             }
         }
 

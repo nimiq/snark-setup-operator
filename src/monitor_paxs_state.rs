@@ -14,7 +14,7 @@ pub struct ParticipantState {
 impl ParticipantState {
     fn new(unique_chunk_id: UniqueChunkId, contribution_time: DateTime<Utc>) -> Self {
         Self {
-            contributed_chunks_counter: 1,
+            contributed_chunks_counter: 0,
             last_contribution: (unique_chunk_id, contribution_time),
         }
     }
@@ -27,13 +27,11 @@ impl ParticipantState {
         &mut self,
         unique_chunk_id: &UniqueChunkId,
         contribution_time: DateTime<Utc>,
-    ) -> &Self {
+    ) {
         if self.last_contribution.1 < contribution_time {
             self.last_contribution = (unique_chunk_id.clone(), contribution_time);
         }
         self.contributed_chunks_counter += 1;
-
-        self
     }
 
     fn is_finished_contributing(&self, total_chunks: usize) -> bool {
@@ -52,6 +50,21 @@ pub struct ParticipantsContributionState {
 }
 
 impl ParticipantsContributionState {
+    /// The number of ongoing contributing participants.
+    /// Returns total participants that started contributing and haven't finished yet.
+    pub fn get_active_participants_count(&self, total_chunks: usize) -> usize {
+        self.current_participants_state
+            .iter()
+            .filter(|(_, state)| !state.is_finished_contributing(total_chunks))
+            .count()
+    }
+
+    /// The number of participants that have started contributing.
+    /// Returns total participants that started contributing including the ones that concluded all chunks.
+    pub fn get_total_contributing_participants(&self) -> usize {
+        self.current_participants_state.keys().count()
+    }
+
     /// This copies the backs up the state to the `last_ceremony_iteration_state` and resets
     /// the chunks contribution counters on the current state.
     /// This function must be called before applying any chunk from a new ceremony version.
@@ -67,7 +80,7 @@ impl ParticipantsContributionState {
     /// Updates the current participants state with the new chunk contributions data.
     /// This assumes that the counters have been reset and the old state has been copied
     /// before updating with the first chunk.
-    pub fn update(&mut self, new_chunk: &Chunk, total_chunks: usize) {
+    pub fn update(&mut self, new_chunk: &Chunk) {
         // Update last contribution.
         // If it's the first contribution or the last one we log it.
         new_chunk
@@ -82,12 +95,11 @@ impl ParticipantsContributionState {
                 }
                 (_, _) => None,
             })
-            .for_each(|(contributor, contribution_time)| {
-                let new_participant_state = self
-                    .current_participants_state
-                    .entry(contributor)
+            .for_each(|(contributor_id, contribution_time)| {
+                self.current_participants_state
+                    .entry(contributor_id)
                     .or_insert_with(|| {
-                        info!("New participant started contributing! {}", contributor);
+                        info!("New participant started contributing! {}", contributor_id);
 
                         ParticipantState::new(
                             new_chunk.unique_chunk_id.clone(),
@@ -98,10 +110,6 @@ impl ParticipantsContributionState {
                         &new_chunk.unique_chunk_id,
                         contribution_time,
                     );
-
-                if new_participant_state.is_finished_contributing(total_chunks) {
-                    info!("Participant finished contributing! {}", contributor);
-                }
             });
     }
 
@@ -119,12 +127,24 @@ impl ParticipantsContributionState {
             let new_state = self.current_participants_state.get(participant_id);
             match (old_state, new_state) {
                 (Some(old_state), Some(new_state)) => {
-                    if !new_state.is_finished_contributing(total_chunks)
-                        && new_state.last_contribution == old_state.last_contribution
-                        && ceremony_update - old_state.last_contribution.1
-                            >= last_contribution_timeout
-                    {
-                        warn!("Participant is stuck! {}", participant_id);
+                    // Detect that the participant is on the same chunk for too long.
+                    let elapse = ceremony_update - new_state.last_contribution.1;
+                    if !new_state.is_finished_contributing(total_chunks) {
+                        if new_state.last_contribution == old_state.last_contribution
+                            && elapse >= last_contribution_timeout
+                        {
+                            warn!(
+                                "Participant {} is stuck for {}min {}s!",
+                                participant_id,
+                                elapse.num_minutes(),
+                                elapse.num_seconds()
+                            );
+                        }
+                    } else {
+                        // Log that the participant finished contributing only once.
+                        if !old_state.is_finished_contributing(total_chunks) {
+                            info!("Participant finished contributing! {}", participant_id);
+                        }
                     }
                 }
                 (_, _) => {}

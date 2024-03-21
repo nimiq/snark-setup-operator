@@ -1,7 +1,7 @@
 use anyhow::{Ok, Result};
 use chrono::{DateTime, Duration, Utc};
 use nimiq_keys::PublicKey;
-use tracing::warn;
+use tracing::error;
 
 use crate::{
     data_structs::{Chunk, Contribution, ContributionMetadata},
@@ -40,7 +40,7 @@ impl ChunkState {
                 return (last_contributor.clone(), metadata.clone());
             }
             ChunkState::EmptyState() => {
-                panic!("Empty chunk state");
+                panic!("Unwrapped empty chunk state!");
             }
         }
     }
@@ -85,7 +85,7 @@ impl ChunkState {
                 {
                     if let Some(contributed_time) = metadata.contributed_time {
                         if ceremony_update - contributed_time >= pending_verification_timeout {
-                            warn!(
+                            error!(
                                 "Chunk is pending verification! ChunkID: {} Contributor: {}",
                                 new_chunk.unique_chunk_id, new_contributor
                             );
