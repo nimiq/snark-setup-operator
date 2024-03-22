@@ -1,9 +1,11 @@
 use chrono::{DateTime, Duration, Utc};
 use nimiq_keys::PublicKey;
 use std::collections::{HashMap, HashSet};
-use tracing::{info, warn};
 
-use crate::data_structs::{Chunk, UniqueChunkId};
+use crate::{
+    data_structs::{Chunk, UniqueChunkId},
+    monitor_logger::{Logger, NotificationPriority},
+};
 
 #[derive(Debug, Clone)]
 pub struct ParticipantState {
@@ -14,7 +16,7 @@ pub struct ParticipantState {
 impl ParticipantState {
     fn new(unique_chunk_id: UniqueChunkId, contribution_time: DateTime<Utc>) -> Self {
         Self {
-            contributed_chunks_counter: 0,
+            contributed_chunks_counter: 1,
             last_contribution: (unique_chunk_id, contribution_time),
         }
     }
@@ -80,13 +82,9 @@ impl ParticipantsContributionState {
     /// Updates the current participants state with the new chunk contributions data.
     /// This assumes that the counters have been reset and the old state has been copied
     /// before updating with the first chunk.
-    pub fn update(&mut self, new_chunk: &Chunk) {
-        // Update last contribution.
-        // If it's the first contribution or the last one we log it.
-        new_chunk
-            .contributions
-            .iter()
-            .filter_map(|c| match (c.contributor_id, c.metadata.as_ref()) {
+    pub async fn update(&mut self, logger: &Logger, new_chunk: &Chunk) {
+        for (contributor_id, contribution_time) in new_chunk.contributions.iter().filter_map(|c| {
+            match (c.contributor_id, c.metadata.as_ref()) {
                 (Some(contributor_id), Some(metadata)) => {
                     if let Some(contribution_time) = metadata.contributed_time {
                         return Some((contributor_id, contribution_time));
@@ -94,31 +92,42 @@ impl ParticipantsContributionState {
                     None
                 }
                 (_, _) => None,
-            })
-            .for_each(|(contributor_id, contribution_time)| {
-                self.current_participants_state
-                    .entry(contributor_id)
-                    .or_insert_with(|| {
-                        info!("New participant started contributing! {}", contributor_id);
-
-                        ParticipantState::new(
-                            new_chunk.unique_chunk_id.clone(),
-                            contribution_time.clone(),
-                        )
-                    })
-                    .update_participant_contributions_state(
-                        &new_chunk.unique_chunk_id,
-                        contribution_time,
-                    );
-            });
+            }
+        }) {
+            if let Some(participant_state) =
+                self.current_participants_state.get_mut(&contributor_id)
+            {
+                // Update last contribution.
+                participant_state.update_participant_contributions_state(
+                    &new_chunk.unique_chunk_id,
+                    contribution_time,
+                );
+            } else {
+                // When it's the first one we insert it and log it.
+                self.current_participants_state.insert(
+                    contributor_id,
+                    ParticipantState::new(
+                        new_chunk.unique_chunk_id.clone(),
+                        contribution_time.clone(),
+                    ),
+                );
+                logger
+                    .log_and_notify_slack(
+                        &format!("New participant started contributing! {}", contributor_id),
+                        NotificationPriority::Info,
+                    )
+                    .await;
+            }
+        }
     }
 
     /// Logs all the paxs that are on the same last contribution as in the previous iteration.
     /// This should only be called after applying all chunks.
-    pub fn check_for_stuck_paxs(
+    pub async fn check_for_stuck_paxs(
         &self,
         participant_ids: &HashSet<PublicKey>,
         total_chunks: usize,
+        logger: &Logger,
         ceremony_update: DateTime<Utc>,
         last_contribution_timeout: Duration,
     ) {
@@ -133,18 +142,42 @@ impl ParticipantsContributionState {
                         if new_state.last_contribution == old_state.last_contribution
                             && elapse >= last_contribution_timeout
                         {
-                            warn!(
-                                "Participant {} is stuck for {}min {}s!",
-                                participant_id,
-                                elapse.num_minutes(),
-                                elapse.num_seconds()
-                            );
+                            logger
+                                .log_and_notify_slack(
+                                    &format!(
+                                        "Participant {} is stuck for {}min {}s!",
+                                        participant_id,
+                                        elapse.num_minutes(),
+                                        elapse.num_seconds()
+                                    ),
+                                    NotificationPriority::Warning,
+                                )
+                                .await;
                         }
                     } else {
                         // Log that the participant finished contributing only once.
                         if !old_state.is_finished_contributing(total_chunks) {
-                            info!("Participant finished contributing! {}", participant_id);
+                            logger
+                                .log_and_notify_slack(
+                                    &format!(
+                                        "Participant finished contributing! {}",
+                                        participant_id
+                                    ),
+                                    NotificationPriority::Info,
+                                )
+                                .await;
                         }
+                    }
+                }
+                (None, Some(new_state)) => {
+                    // When it's the first iteration we only need to log if the participant has finished.
+                    if new_state.is_finished_contributing(total_chunks) {
+                        logger
+                            .log_and_notify_slack(
+                                &format!("Participant finished contributing! {}", participant_id),
+                                NotificationPriority::Info,
+                            )
+                            .await;
                     }
                 }
                 (_, _) => {}

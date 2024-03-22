@@ -1,11 +1,11 @@
 use anyhow::{Ok, Result};
 use chrono::{DateTime, Duration, Utc};
 use nimiq_keys::PublicKey;
-use tracing::error;
 
 use crate::{
     data_structs::{Chunk, Contribution, ContributionMetadata},
     error::VerifyTranscriptError,
+    monitor_logger::{Logger, NotificationPriority},
 };
 
 #[derive(Debug, Clone)]
@@ -45,9 +45,10 @@ impl ChunkState {
         }
     }
 
-    pub fn update(
+    pub async fn update(
         &mut self,
         new_chunk: &Chunk,
+        logger: &Logger,
         ceremony_update: DateTime<Utc>,
         pending_verification_timeout: Duration,
     ) -> Result<()> {
@@ -85,10 +86,15 @@ impl ChunkState {
                 {
                     if let Some(contributed_time) = metadata.contributed_time {
                         if ceremony_update - contributed_time >= pending_verification_timeout {
-                            error!(
-                                "Chunk is pending verification! ChunkID: {} Contributor: {}",
-                                new_chunk.unique_chunk_id, new_contributor
-                            );
+                            logger
+                                .log_and_notify_slack(
+                                    &format!(
+                                    "Chunk is pending verification! ChunkID: {} Contributor: {}",
+                                    new_chunk.unique_chunk_id, new_contributor
+                                ),
+                                    NotificationPriority::Error,
+                                )
+                                .await;
                         }
                     }
                 }
