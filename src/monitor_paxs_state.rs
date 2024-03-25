@@ -129,7 +129,7 @@ impl ParticipantsContributionState {
         total_chunks: usize,
         logger: &Logger,
         ceremony_update: DateTime<Utc>,
-        last_contribution_timeout: Duration,
+        contribution_timeout: Duration,
     ) {
         for participant_id in participant_ids.iter() {
             let old_state = self.last_ceremony_version_state.get(participant_id);
@@ -140,7 +140,7 @@ impl ParticipantsContributionState {
                     let elapse = ceremony_update - new_state.last_contribution.1;
                     if !new_state.is_finished_contributing(total_chunks) {
                         if new_state.last_contribution == old_state.last_contribution
-                            && elapse >= last_contribution_timeout
+                            && elapse >= contribution_timeout
                         {
                             logger
                                 .log_and_notify_slack(

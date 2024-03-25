@@ -51,6 +51,7 @@ impl ChunkState {
         logger: &Logger,
         ceremony_update: DateTime<Utc>,
         pending_verification_timeout: Duration,
+        contribution_timeout: Duration,
     ) -> Result<()> {
         let new_last_contribution = new_chunk.contributions.last();
 
@@ -75,26 +76,50 @@ impl ChunkState {
             ) => {
                 //  We must check if progress has been made before replacing value.
                 let new_chunk_state: ChunkState = new_last_contribution.try_into()?;
-                let (new_contributor, new_metadata) =
+                let (new_contributor, new_contribution_metadata) =
                     new_chunk_state.unwrap_recorded_contribution_state();
 
-                // If chunk is pending verification for too long we log it.
-                if last_contributor == &new_contributor
-                    && metadata.verified_time.is_none()
-                    && new_metadata.verified_time.is_none()
-                    && metadata.contributed_time == new_metadata.contributed_time
-                {
-                    if let Some(contributed_time) = metadata.contributed_time {
-                        if ceremony_update - contributed_time >= pending_verification_timeout {
-                            logger
-                                .log_and_notify_slack(
-                                    &format!(
-                                    "Chunk is pending verification! ChunkID: {} Contributor: {}",
-                                    new_chunk.unique_chunk_id, new_contributor
-                                ),
-                                    NotificationPriority::Error,
-                                )
-                                .await;
+                // If the state has the same last contribution has before.
+                if last_contributor == &new_contributor {
+                    // If there is a finished contribution, we want to check if the verification is pending for too long.
+                    if metadata.contributed_time == new_contribution_metadata.contributed_time {
+                        if metadata.verified_time.is_none()
+                            && new_contribution_metadata.verified_time.is_none()
+                        {
+                            if let Some(contributed_time) = metadata.contributed_time {
+                                // Log that we are pending verification for too long.
+                                if ceremony_update - contributed_time
+                                    >= pending_verification_timeout
+                                {
+                                    logger
+                                        .log_and_notify_slack(
+                                            &format!(
+                                                "Chunk is pending verification! ChunkID: {} Contributor: {}",
+                                                new_chunk.unique_chunk_id, new_contributor
+                                            ),
+                                            NotificationPriority::Error,
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    } else {
+                        // If the current contribution is not finished, then we must check if the lock is held for too long.
+                        if let Some(new_chunk_metadata) = new_chunk.metadata.as_ref() {
+                            if let Some(lock_time) = new_chunk_metadata.lock_holder_time {
+                                // Log that a lock is being held for too long.
+                                if ceremony_update - lock_time >= contribution_timeout {
+                                    logger
+                                    .log_and_notify_slack(
+                                        &format!(
+                                            "Chunk lock held for too long! ChunkID: {} Contributor: {} Time: {}",
+                                            new_chunk.unique_chunk_id, new_contributor,lock_time
+                                        ),
+                                        NotificationPriority::Error,
+                                    )
+                                    .await;
+                                }
+                            }
                         }
                     }
                 }

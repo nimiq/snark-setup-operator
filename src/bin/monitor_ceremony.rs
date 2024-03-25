@@ -153,7 +153,7 @@ impl RoundState {
         ceremony_update: DateTime<Utc>,
         logger: &Logger,
         pending_verification_timeout: Duration,
-        last_contribution_timeout: Duration,
+        contribution_timeout: Duration,
     ) -> Result<()> {
         self.check_and_update_round_number(logger, ceremony).await;
 
@@ -186,6 +186,7 @@ impl RoundState {
                         logger,
                         ceremony_update,
                         pending_verification_timeout,
+                        contribution_timeout,
                     )
                     .await
                     .unwrap();
@@ -228,7 +229,7 @@ impl RoundState {
                     self.total_chunks,
                     logger,
                     ceremony_update,
-                    last_contribution_timeout,
+                    contribution_timeout,
                 )
                 .await;
         } else {
@@ -265,7 +266,7 @@ pub struct MonitorOpts {
         help = "participant's stuck on the same chunk timeout in minutes",
         default = "10"
     )]
-    pub last_contribution_timeout: i64,
+    pub contribution_timeout: i64,
     // #[options(help = "chunk lock timeout in minutes", default = "10")]
     // pub chunk_timeout: i64,
 }
@@ -276,7 +277,7 @@ pub struct Monitor {
     pub logger: Logger,
     pub ceremony_timeout: Duration,
     pub pending_verification_timeout: Duration,
-    pub last_contribution_timeout: Duration,
+    pub contribution_timeout: Duration,
 
     // Last changed values in the ceremony
     pub ceremony_version: u64,
@@ -293,7 +294,7 @@ impl Monitor {
             logger: Logger::new(opts.slack_webhook_url.clone()),
             ceremony_timeout: Duration::minutes(opts.ceremony_timeout),
             pending_verification_timeout: Duration::minutes(opts.pending_verification_timeout),
-            last_contribution_timeout: Duration::minutes(opts.last_contribution_timeout),
+            contribution_timeout: Duration::minutes(opts.contribution_timeout),
             ceremony_version: 0,
             ceremony_update: chrono::Utc::now(),
             round_state: RoundState::default(),
@@ -315,7 +316,7 @@ impl Monitor {
                     self.ceremony_update,
                     &self.logger,
                     self.pending_verification_timeout,
-                    self.last_contribution_timeout,
+                    self.contribution_timeout,
                 )
                 .await?;
         }
