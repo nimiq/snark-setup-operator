@@ -11,6 +11,9 @@ use crate::{
 pub struct ParticipantState {
     contributed_chunks_counter: usize,
     last_contribution: (UniqueChunkId, DateTime<Utc>),
+    // Records if the participant was stuck on the last run.
+    // We use this to avoid spamming with equal alerts.
+    is_stuck: bool,
 }
 
 impl ParticipantState {
@@ -18,6 +21,7 @@ impl ParticipantState {
         Self {
             contributed_chunks_counter: 1,
             last_contribution: (unique_chunk_id, contribution_time),
+            is_stuck: false,
         }
     }
 
@@ -34,6 +38,7 @@ impl ParticipantState {
             self.last_contribution = (unique_chunk_id.clone(), contribution_time);
         }
         self.contributed_chunks_counter += 1;
+        self.is_stuck = false;
     }
 
     fn is_finished_contributing(&self, total_chunks: usize) -> bool {
@@ -124,7 +129,7 @@ impl ParticipantsContributionState {
     /// Logs all the paxs that are on the same last contribution as in the previous iteration.
     /// This should only be called after applying all chunks.
     pub async fn check_for_stuck_paxs(
-        &self,
+        &mut self,
         participant_ids: &HashSet<PublicKey>,
         total_chunks: usize,
         logger: &Logger,
@@ -133,15 +138,18 @@ impl ParticipantsContributionState {
     ) {
         for participant_id in participant_ids.iter() {
             let old_state = self.last_ceremony_version_state.get(participant_id);
-            let new_state = self.current_participants_state.get(participant_id);
+            let new_state = self.current_participants_state.get_mut(participant_id);
             match (old_state, new_state) {
                 (Some(old_state), Some(new_state)) => {
-                    // Detect that the participant is on the same chunk for too long.
-                    let elapse = ceremony_update - new_state.last_contribution.1;
+                    // If the participant is not finished we check for timeouts.
                     if !new_state.is_finished_contributing(total_chunks) {
-                        if new_state.last_contribution == old_state.last_contribution
+                        // Detect that the participant is on the same chunk for too long.
+                        let elapse = ceremony_update - new_state.last_contribution.1;
+                        if !old_state.is_stuck
+                            && new_state.last_contribution == old_state.last_contribution
                             && elapse >= contribution_timeout
                         {
+                            new_state.is_stuck = true;
                             logger
                                 .log_and_notify_slack(
                                     &format!(
@@ -155,7 +163,7 @@ impl ParticipantsContributionState {
                                 .await;
                         }
                     } else {
-                        // Log that the participant finished contributing only once.
+                        // If the participant is finished we log it only once.
                         if !old_state.is_finished_contributing(total_chunks) {
                             logger
                                 .log_and_notify_slack(

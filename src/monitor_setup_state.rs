@@ -14,6 +14,10 @@ pub enum ChunkState {
     RecordedState {
         last_contributor: PublicKey,
         metadata: ContributionMetadata,
+        // Records of whether the verification or last contribution had a timeout on the last run.
+        // We use this to avoid spamming with equal alerts.
+        verifying_timeout: bool,
+        contributing_timeout: bool,
     },
 }
 impl TryFrom<&Contribution> for ChunkState {
@@ -26,6 +30,8 @@ impl TryFrom<&Contribution> for ChunkState {
                 .metadata
                 .clone()
                 .ok_or(VerifyTranscriptError::ContributorDataIsNoneError)?,
+            verifying_timeout: false,
+            contributing_timeout: false,
         })
     }
 }
@@ -36,8 +42,36 @@ impl ChunkState {
             ChunkState::RecordedState {
                 last_contributor,
                 metadata,
+                ..
             } => {
                 return (last_contributor.clone(), metadata.clone());
+            }
+            ChunkState::EmptyState() => {
+                panic!("Unwrapped empty chunk state!");
+            }
+        }
+    }
+
+    fn set_verifying_timeout(&mut self) {
+        match self {
+            ChunkState::RecordedState {
+                verifying_timeout, ..
+            } => {
+                *verifying_timeout = true;
+            }
+            ChunkState::EmptyState() => {
+                panic!("Unwrapped empty chunk state!");
+            }
+        }
+    }
+
+    fn set_contributing_timeout(&mut self) {
+        match self {
+            ChunkState::RecordedState {
+                contributing_timeout,
+                ..
+            } => {
+                *contributing_timeout = true;
             }
             ChunkState::EmptyState() => {
                 panic!("Unwrapped empty chunk state!");
@@ -71,11 +105,13 @@ impl ChunkState {
                 ChunkState::RecordedState {
                     last_contributor,
                     metadata,
+                    verifying_timeout,
+                    contributing_timeout,
                 },
                 Some(new_last_contribution),
             ) => {
                 //  We must check if progress has been made before replacing value.
-                let new_chunk_state: ChunkState = new_last_contribution.try_into()?;
+                let mut new_chunk_state: ChunkState = new_last_contribution.try_into()?;
                 let (new_contributor, new_contribution_metadata) =
                     new_chunk_state.unwrap_recorded_contribution_state();
 
@@ -88,9 +124,11 @@ impl ChunkState {
                         {
                             if let Some(contributed_time) = metadata.contributed_time {
                                 // Log that we are pending verification for too long.
-                                if ceremony_update - contributed_time
-                                    >= pending_verification_timeout
+                                if !verifying_timeout
+                                    && ceremony_update - contributed_time
+                                        >= pending_verification_timeout
                                 {
+                                    new_chunk_state.set_verifying_timeout();
                                     logger
                                         .log_and_notify_slack(
                                             &format!(
@@ -108,7 +146,10 @@ impl ChunkState {
                         if let Some(new_chunk_metadata) = new_chunk.metadata.as_ref() {
                             if let Some(lock_time) = new_chunk_metadata.lock_holder_time {
                                 // Log that a lock is being held for too long.
-                                if ceremony_update - lock_time >= contribution_timeout {
+                                if !contributing_timeout
+                                    && ceremony_update - lock_time >= contribution_timeout
+                                {
+                                    new_chunk_state.set_contributing_timeout();
                                     logger
                                     .log_and_notify_slack(
                                         &format!(
