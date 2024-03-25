@@ -8,6 +8,17 @@ pub enum NotificationPriority {
     Error,
 }
 
+impl NotificationPriority {
+    // Function to format the message based on its type
+    fn format_message(&self, log_message: &String) -> String {
+        match self {
+            Self::Info => format!(":information_source: *[INFO]* {}", log_message),
+            Self::Warning => format!(":warning: *[WARNING]* {}", log_message),
+            Self::Error => format!(":x: *[ERROR]* {}", log_message),
+        }
+    }
+}
+
 pub struct Logger {
     webhook_url: String,
     client: Client,
@@ -28,7 +39,7 @@ impl Logger {
     ) {
         // Format the message payload as per Slack's requirements
         let payload = json!({
-            "text": message,
+            "text": priority_type.format_message(message),
         });
 
         // Send the payload to the Slack webhook URL using a POST request
