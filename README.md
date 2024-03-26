@@ -6,9 +6,12 @@ Tools included:
 * `contribute` - run a contributor or a verifier.
 
 * `monitor` - checks the status of the setup:
-  * Did any participants time out?
-  * Did all chunks finish?
-  * What are the incomplete chunks?
+  * Did any participants get stuck?
+  * Did a new round start?
+  * Did a participant start or finish contributing?
+  * Did a chunk's verification timeout?
+  * Did a chunk lock timeout?
+  * Did all setups finish?
   
 * `verify_transcript` - given a coordinator state and participant IDs, verifies the entire setup as run by the coordinator:
   * Verify each contribution in each chunks, including signatures and the hash chain.
