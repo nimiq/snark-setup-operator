@@ -103,7 +103,7 @@ impl RoundState {
                     )
                     .await;
 
-                return Err(MonitorError::ParametersDifferentBetweenRounds(
+                return Err(MonitorError::MonitorParametersDifferentBetweenRounds(
                     self.setups_contribution_state.len(),
                     ceremony.setups.len(),
                 )
@@ -188,8 +188,7 @@ impl RoundState {
                         pending_verification_timeout,
                         contribution_timeout,
                     )
-                    .await
-                    .unwrap();
+                    .await?;
 
                 if setup_finished.load(Ordering::Relaxed) {
                     let verified_participant_ids_in_chunk: HashSet<_> = new_chunk

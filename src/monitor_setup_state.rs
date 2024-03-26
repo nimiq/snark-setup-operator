@@ -24,15 +24,19 @@ impl TryFrom<&Contribution> for ChunkState {
     type Error = anyhow::Error;
 
     fn try_from(contribution: &Contribution) -> Result<Self> {
-        Ok(Self::RecordedState {
-            last_contributor: contribution.contributor_id()?,
-            metadata: contribution
-                .metadata
-                .clone()
-                .ok_or(VerifyTranscriptError::ContributorDataIsNoneError)?,
-            verifying_timeout: false,
-            contributing_timeout: false,
-        })
+        if let Result::Ok(contributor_id) = contribution.contributor_id() {
+            Ok(Self::RecordedState {
+                last_contributor: contributor_id,
+                metadata: contribution
+                    .metadata
+                    .clone()
+                    .ok_or(VerifyTranscriptError::ContributorDataIsNoneError)?,
+                verifying_timeout: false,
+                contributing_timeout: false,
+            })
+        } else {
+            Ok(Self::EmptyState())
+        }
     }
 }
 
