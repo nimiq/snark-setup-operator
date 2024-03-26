@@ -256,7 +256,7 @@ pub struct MonitorOpts {
     pub slack_webhook_url: String,
     #[options(help = "polling interval in minutes", default = "1")]
     pub polling_interval: u64,
-    #[options(help = "ceremony timeout in minutes", default = "30")]
+    #[options(help = "ceremony timeout in minutes", default = "60")]
     pub ceremony_timeout: i64,
 
     #[options(help = "chunk pending verification timeout in minutes", default = "5")]
@@ -281,6 +281,9 @@ pub struct Monitor {
     // Last changed values in the ceremony
     pub ceremony_version: u64,
     pub ceremony_update: DateTime<Utc>,
+    /// The counter for timeouts due to no ongoing contributions.
+    pub last_timeout_ceremony_time: Option<DateTime<Utc>>,
+    pub no_ongoing_contributions_timeout_count: usize,
 
     /// The state of the round of contributions.
     pub round_state: RoundState,
@@ -294,6 +297,8 @@ impl Monitor {
             ceremony_timeout: Duration::minutes(opts.ceremony_timeout),
             pending_verification_timeout: Duration::minutes(opts.pending_verification_timeout),
             contribution_timeout: Duration::minutes(opts.contribution_timeout),
+            last_timeout_ceremony_time: None,
+            no_ongoing_contributions_timeout_count: 0,
             ceremony_version: 0,
             ceremony_update: chrono::Utc::now(),
             round_state: RoundState::default(),
@@ -325,12 +330,18 @@ impl Monitor {
 
     pub async fn check_and_update_ceremony_version(&mut self, ceremony: &Ceremony) -> Result<bool> {
         let current_time = chrono::Utc::now();
-        let elapsed = current_time - self.ceremony_update;
+        let last_check_time = if let Some(last_timeout_time) = self.last_timeout_ceremony_time {
+            last_timeout_time
+        } else {
+            self.ceremony_update
+        };
+        let elapsed = current_time - last_check_time;
         let new_version = ceremony.version != self.ceremony_version;
 
         if new_version {
             self.ceremony_update = current_time;
             self.ceremony_version = ceremony.version;
+            self.last_timeout_ceremony_time = None;
         } else {
             if self.ceremony_timeout <= elapsed && !self.round_state.is_round_complete() {
                 let ongoing_contributions_count = self
@@ -344,7 +355,7 @@ impl Monitor {
 
                 if ongoing_contributions_count > 0 {
                     // If there's contributors that haven't finished their contribution. Either all participants
-                    // died off or this is a product of dark evil forces of darkness.
+                    // died off or this is a product of evil forces of darkness.
                     self.logger.log_and_notify_slack(
                         &format!("Ceremony progress is stuck at version {:?} for {:?} minutes. Currently active {} {}/{} participants",
                     ceremony.version,
@@ -353,22 +364,31 @@ impl Monitor {
                     total_round_contributions,
                     ceremony.contributor_ids.iter().count()), NotificationPriority::Error).await;
                 } else {
-                    // The round is not complete but no participant is actively contributing.
-                    // So participant that has started to contribute, has also finished.
-                    // Thus it is not an indication of a serious problem with the ceremony.
-                    self.logger
-                        .log_and_notify_slack(
-                            &format!(
-                            "Nobody is participating for {:?} minutes. Participation count: {}/{}",
-                            elapsed.num_minutes(),
+                    // In case of no ongoing contributions and we want to log with decreasing frequency.
+                    if total_round_contributions > 0
+                        && self.ceremony_timeout
+                            * (2 + self.no_ongoing_contributions_timeout_count as i32)
+                            <= elapsed
+                    {
+                        // The round is not complete but no participant is actively contributing.
+                        // So participant that has started to contribute, has also finished.
+                        // Thus it is not an indication of a serious problem with the ceremony.
+                        self.no_ongoing_contributions_timeout_count += 1;
+                        self.logger
+                            .log_and_notify_slack(
+                                &format!(
+                            "Nobody is participating for {:?} hours. Participation count: {}/{}",
+                            elapsed.num_hours(),
                             total_round_contributions,
                             ceremony.contributor_ids.iter().count()
                         ),
-                            NotificationPriority::Warning,
-                        )
-                        .await;
+                                NotificationPriority::Warning,
+                            )
+                            .await;
+                    }
                 }
             }
+            self.last_timeout_ceremony_time = Some(current_time);
         }
 
         Ok(new_version)
