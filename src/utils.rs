@@ -8,7 +8,7 @@ pub const BEACON_HASH_LENGTH: usize = 32;
 
 use crate::blobstore::{upload_access_key, upload_sas};
 use crate::data_structs::{
-    Attestation, Ceremony, NimiqSetupKeys, Parameters, ParticipantId, ProcessorData, Response,
+    Attestation, Ceremony, CpuData, NimiqSetupKeys, Parameters, ParticipantId, Response,
 };
 use crate::error::{UtilsError, VerifyTranscriptError};
 use age::{
@@ -27,6 +27,7 @@ use std::{
     io::{Read, Write},
     path::Path,
 };
+use sysinfo::{CpuRefreshKind, System};
 use tracing::warn;
 
 pub const PHASE2_INIT_FILENAME: &str = "phase2_init";
@@ -468,25 +469,21 @@ pub fn read_keys(
     Ok((nimiq_seed, nimiq_key_pair_from_file, keys.attestation))
 }
 
-pub fn collect_processor_data() -> Result<Vec<ProcessorData>> {
-    cfg_if::cfg_if! {
-        if #[cfg(not(target_arch = "aarch64"))] {
-            use sysinfo::{CpuExt, System, SystemExt};
-            let s = System::new();
-            let processors = s
-                .cpus()
-                .iter()
-                .map(|p| ProcessorData {
-                    name: p.name().to_string(),
-                    brand: p.brand().to_string(),
-                    frequency: p.frequency().to_string(),
-                })
-                .collect();
-            Ok(processors)
-        } else {
-            Ok(vec![])
-        }
-    }
+pub fn collect_processor_data() -> Result<Vec<CpuData>> {
+    // Retrieve cpu data.
+    let mut system = System::new();
+    system.refresh_cpu_specifics(CpuRefreshKind::everything());
+
+    let cpus = system
+        .cpus()
+        .iter()
+        .map(|p| CpuData {
+            name: p.name().to_string(),
+            brand: p.brand().to_string(),
+            frequency: p.frequency().to_string(),
+        })
+        .collect();
+    Ok(cpus)
 }
 
 pub struct MaxRetriesHandler {
