@@ -11,7 +11,7 @@ use setup_utils::{domain_size, CheckForCorrectness};
 use snark_setup_operator::data_structs::Setup;
 use snark_setup_operator::setup_filename;
 use snark_setup_operator::transcript_data_structs::Transcript;
-use snark_setup_operator::utils::COMBINED_FILENAME;
+use snark_setup_operator::utils::COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME;
 use snark_setup_operator::{
     error::VerifyTranscriptError,
     utils::{create_full_parameters, remove_file_if_exists},
@@ -212,7 +212,10 @@ impl IntermediateTransform {
         remove_file_if_exists(output_filename)?;
         phase2_cli::prepare_phase2(
             output_filename,
-            setup_filename!(COMBINED_FILENAME, setup.setup_id),
+            setup_filename!(
+                COMBINED_VERIFIED_POK_AND_CORRECTNESS_NEW_CHALLENGE_FILENAME,
+                setup.setup_id
+            ),
             phase2_size,
             &parameters,
             if disable_correctness_checks {
