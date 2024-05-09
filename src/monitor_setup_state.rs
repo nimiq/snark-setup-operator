@@ -3,84 +3,256 @@ use chrono::{DateTime, Duration, Utc};
 use nimiq_keys::PublicKey;
 
 use crate::{
-    data_structs::{Chunk, Contribution, ContributionMetadata},
+    data_structs::{Chunk, Contribution, ContributionMetadata, UniqueChunkId},
     error::VerifyTranscriptError,
     monitor_logger::{Logger, NotificationPriority},
 };
 
-#[derive(Debug, Clone)]
-pub enum ChunkState {
-    EmptyState(),
-    RecordedState {
-        last_contributor: PublicKey,
-        metadata: ContributionMetadata,
-        // Records of whether the verification or last contribution had a timeout on the last run.
-        // We use this to avoid spamming with equal alerts.
-        verifying_timeout: bool,
-        contributing_timeout: bool,
-    },
-}
-impl TryFrom<&Contribution> for ChunkState {
-    type Error = anyhow::Error;
+impl Contribution {
+    fn get_recorded_contribution_state(&self) -> Result<(PublicKey, ContributionMetadata)> {
+        let last_contributor = self.contributor_id()?;
 
-    fn try_from(contribution: &Contribution) -> Result<Self> {
-        if let Result::Ok(contributor_id) = contribution.contributor_id() {
-            Ok(Self::RecordedState {
-                last_contributor: contributor_id,
-                metadata: contribution
-                    .metadata
-                    .clone()
-                    .ok_or(VerifyTranscriptError::ContributorDataIsNoneError)?,
+        Ok((
+            last_contributor,
+            self.metadata
+                .clone()
+                .ok_or(VerifyTranscriptError::ContributorDataIsNoneError)?,
+        ))
+    }
+
+    fn get_state(&self) -> Result<Option<RecordedState>> {
+        if let Some(last_contributor) = self.contributor_id {
+            let metadata = self
+                .metadata
+                .clone()
+                .ok_or(VerifyTranscriptError::ContributorDataIsNoneError)?;
+
+            Ok(Some(RecordedState {
+                last_contributor,
+                metadata,
                 verifying_timeout: false,
                 contributing_timeout: false,
-            })
+            }))
         } else {
-            Ok(Self::EmptyState())
+            Ok(None)
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordedState {
+    last_contributor: PublicKey,
+    metadata: ContributionMetadata,
+    // Records of whether the verification or last contribution had a timeout on the last run.
+    // We use this to avoid spamming with equal alerts.
+    verifying_timeout: bool,
+    contributing_timeout: bool,
+}
+
+impl RecordedState {
+    async fn update_existing_state_with_new_state(
+        &mut self,
+        logger: &Logger,
+        new_chunk: &Chunk,
+        new_last_contribution: &Contribution,
+        ceremony_update: DateTime<Utc>,
+        pending_verification_timeout: (Duration, bool),
+        contribution_lock_timeout: Duration,
+    ) -> Result<()> {
+        // We take the last contribution data.
+        let (mut new_contributor, mut new_contribution_metadata) =
+            new_last_contribution.get_recorded_contribution_state()?;
+        // If a new lock holder for the chunk then we take that information since it's the most recent one.
+        // Note: We check that the last contribution is verified so that a verifier's lock does not get mistaken with a participant.
+        if let Some(lock_holder) = new_chunk.lock_holder {
+            if new_contribution_metadata.verified_time.is_some() {
+                new_contributor = lock_holder;
+                new_contribution_metadata = ContributionMetadata {
+                    contributed_time: None,
+                    contributed_lock_holder_time: new_chunk
+                        .metadata
+                        .as_ref()
+                        .unwrap()
+                        .lock_holder_time,
+                    verified_time: None,
+                    verified_lock_holder_time: None,
+                };
+            }
+        };
+
+        let old_verifying_timeout = self.verifying_timeout;
+        let old_contributing_timeout = self.contributing_timeout;
+        let mut verifying_elapsed_time = Duration::min_value();
+        let mut contributing_elapsed_time = Duration::min_value();
+
+        // If the state has the same last contribution has before.
+        if self.last_contributor == new_contributor
+            && self.metadata.contributed_time == new_contribution_metadata.contributed_time
+        {
+            // If there is a finished contribution, we want to check if the verification is pending for too long.
+            if let Some(contributed_time) = self.metadata.contributed_time {
+                if self.metadata.verified_time.is_none()
+                    && new_contribution_metadata.verified_time.is_none()
+                {
+                    verifying_elapsed_time = ceremony_update - contributed_time;
+                    // Log that we are pending verification for too long.
+                    if verifying_elapsed_time >= pending_verification_timeout.0 {
+                        self.verifying_timeout = true;
+                    }
+                } else if !new_contribution_metadata.verified_time.is_none() {
+                    self.verifying_timeout = false;
+                }
+            } else {
+                // Since the current contribution is not finished, we check if the lock is held for too long.
+                if let Some(new_chunk_metadata) = new_chunk.metadata.as_ref() {
+                    if let Some(lock_time) = new_chunk_metadata.lock_holder_time {
+                        contributing_elapsed_time = ceremony_update - lock_time;
+                        // Log that a lock is being held for too long.
+                        if contributing_elapsed_time >= contribution_lock_timeout {
+                            self.contributing_timeout = true;
+                        }
+                    } else {
+                        self.contributing_timeout = false;
+                    }
+                }
+            }
+        } else {
+            // Different contribution resets the timeouts.
+            self.verifying_timeout = false;
+            self.contributing_timeout = false;
+        }
+
+        // Only log if the verifiers are not overwhelmed. This avoids spam.
+        if !pending_verification_timeout.1 {
+            Self::log_update_verifying_timeout(
+                old_verifying_timeout,
+                self.verifying_timeout,
+                logger,
+                &new_chunk.unique_chunk_id,
+                &self.last_contributor,
+                &verifying_elapsed_time,
+            )
+            .await;
+        }
+        Self::log_update_contributing_timeout(
+            old_contributing_timeout,
+            self.contributing_timeout,
+            logger,
+            &new_chunk.unique_chunk_id,
+            &self.last_contributor,
+            &contributing_elapsed_time,
+        )
+        .await;
+        self.last_contributor = new_contributor;
+        self.metadata = new_contribution_metadata;
+
+        Ok(())
+    }
+
+    async fn log_reset(&self, logger: &Logger, unique_chunk_id: &UniqueChunkId) {
+        Self::log_update_contributing_timeout(
+            self.contributing_timeout,
+            false,
+            logger,
+            &unique_chunk_id,
+            &self.last_contributor,
+            &Duration::min_value(),
+        )
+        .await;
+        Self::log_update_verifying_timeout(
+            self.verifying_timeout,
+            false,
+            logger,
+            &unique_chunk_id,
+            &self.last_contributor,
+            &Duration::min_value(),
+        )
+        .await;
+    }
+
+    async fn log_update_verifying_timeout(
+        old_verifying_timeout: bool,
+        new_verifying_timeout: bool,
+        logger: &Logger,
+        unique_chunk_id: &UniqueChunkId,
+        old_contributor: &PublicKey,
+        elapsed: &Duration,
+    ) {
+        match (&old_verifying_timeout, new_verifying_timeout) {
+            (false, true) => {
+                logger
+                    .log_and_notify_slack(
+                        format!( "Chunk is pending verification for {} hour(s)! ChunkID: {} Contributor: {}",
+                            elapsed.num_hours(), unique_chunk_id, old_contributor),
+                        NotificationPriority::Error,
+                    )
+                    .await;
+            }
+            (true, false) => {
+                logger
+                    .log_and_notify_slack(
+                        format!(
+                            "Chunk verification got solved! ChunkID: {} Contributor: {}",
+                            unique_chunk_id, old_contributor,
+                        ),
+                        NotificationPriority::Resolved,
+                    )
+                    .await;
+            }
+            _ => {}
+        }
+    }
+
+    async fn log_update_contributing_timeout(
+        old_contributing_timeout: bool,
+        new_contributing_timeout: bool,
+        logger: &Logger,
+        unique_chunk_id: &UniqueChunkId,
+        old_contributor: &PublicKey,
+        elapsed: &Duration,
+    ) {
+        match (&old_contributing_timeout, new_contributing_timeout) {
+            (false, true) => {
+                logger
+                    .log_and_notify_slack(
+                        format!(
+                            "Chunk lock held for too long! ChunkID: {} Contributor: {} Time: {}min",
+                            unique_chunk_id,
+                            old_contributor,
+                            elapsed.num_minutes()
+                        ),
+                        NotificationPriority::Error,
+                    )
+                    .await;
+            }
+            (true, false) => {
+                logger
+                    .log_and_notify_slack(
+                        format!(
+                            "Chunk lock timeout got solved! ChunkID: {} Contributor: {}",
+                            unique_chunk_id, old_contributor,
+                        ),
+                        NotificationPriority::Resolved,
+                    )
+                    .await;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ChunkState {
+    state: Option<RecordedState>,
 }
 
 impl ChunkState {
-    fn unwrap_recorded_contribution_state(&self) -> (PublicKey, ContributionMetadata) {
-        match self {
-            ChunkState::RecordedState {
-                last_contributor,
-                metadata,
-                ..
-            } => {
-                return (last_contributor.clone(), metadata.clone());
-            }
-            ChunkState::EmptyState() => {
-                panic!("Unwrapped empty chunk state!");
-            }
+    pub fn is_verification_timeout(&self) -> bool {
+        if let Some(chunk_state) = &self.state {
+            return chunk_state.verifying_timeout;
         }
-    }
 
-    fn set_verifying_timeout(&mut self) {
-        match self {
-            ChunkState::RecordedState {
-                verifying_timeout, ..
-            } => {
-                *verifying_timeout = true;
-            }
-            ChunkState::EmptyState() => {
-                panic!("Unwrapped empty chunk state!");
-            }
-        }
-    }
-
-    fn set_contributing_timeout(&mut self) {
-        match self {
-            ChunkState::RecordedState {
-                contributing_timeout,
-                ..
-            } => {
-                *contributing_timeout = true;
-            }
-            ChunkState::EmptyState() => {
-                panic!("Unwrapped empty chunk state!");
-            }
-        }
+        false
     }
 
     pub async fn update(
@@ -88,94 +260,54 @@ impl ChunkState {
         new_chunk: &Chunk,
         logger: &Logger,
         ceremony_update: DateTime<Utc>,
-        pending_verification_timeout: Duration,
-        contribution_timeout: Duration,
+        pending_verification_timeout: (Duration, bool),
+        contribution_lock_timeout: Duration,
     ) -> Result<()> {
         let new_last_contribution = new_chunk.contributions.last();
-
-        match (&self, new_last_contribution) {
+        match (self.state.is_some(), new_last_contribution.is_some()) {
+            // Nothing to update.
+            (false, false) => {}
             // First contribution for the chunk.
-            (ChunkState::EmptyState(), Some(new_last_contribution)) => {
+            (false, true) => {
                 // Simply replace the current value.
-                *self = new_last_contribution.try_into()?;
+                self.state = new_last_contribution.unwrap().get_state()?;
             }
-            // All chunk contributions were deleted.
-            (ChunkState::RecordedState { .. }, None) => {
+            // All contributions were deleted.
+            (true, false) => {
                 // Simply reset the current value.
-                *self = ChunkState::EmptyState();
+                self.reset_state(logger, &new_chunk.unique_chunk_id).await;
             }
-            // Both versions have contributions.
-            (
-                ChunkState::RecordedState {
-                    last_contributor,
-                    metadata,
-                    verifying_timeout,
-                    contributing_timeout,
-                },
-                Some(new_last_contribution),
-            ) => {
-                //  We must check if progress has been made before replacing value.
-                let mut new_chunk_state: ChunkState = new_last_contribution.try_into()?;
-                let (new_contributor, new_contribution_metadata) =
-                    new_chunk_state.unwrap_recorded_contribution_state();
-
-                // If the state has the same last contribution has before.
-                if last_contributor == &new_contributor {
-                    // If there is a finished contribution, we want to check if the verification is pending for too long.
-                    if metadata.contributed_time == new_contribution_metadata.contributed_time {
-                        if metadata.verified_time.is_none()
-                            && new_contribution_metadata.verified_time.is_none()
-                        {
-                            if let Some(contributed_time) = metadata.contributed_time {
-                                // Log that we are pending verification for too long.
-                                if !verifying_timeout
-                                    && ceremony_update - contributed_time
-                                        >= pending_verification_timeout
-                                {
-                                    new_chunk_state.set_verifying_timeout();
-                                    logger
-                                        .log_and_notify_slack(
-                                            &format!(
-                                                "Chunk is pending verification! ChunkID: {} Contributor: {}",
-                                                new_chunk.unique_chunk_id, new_contributor
-                                            ),
-                                            NotificationPriority::Error,
-                                        )
-                                        .await;
-                                }
-                            }
-                        }
-                    } else {
-                        // If the current contribution is not finished, then we must check if the lock is held for too long.
-                        if let Some(new_chunk_metadata) = new_chunk.metadata.as_ref() {
-                            if let Some(lock_time) = new_chunk_metadata.lock_holder_time {
-                                // Log that a lock is being held for too long.
-                                if !contributing_timeout
-                                    && ceremony_update - lock_time >= contribution_timeout
-                                {
-                                    new_chunk_state.set_contributing_timeout();
-                                    logger
-                                    .log_and_notify_slack(
-                                        &format!(
-                                            "Chunk lock held for too long! ChunkID: {} Contributor: {} Time: {}",
-                                            new_chunk.unique_chunk_id, new_contributor,lock_time
-                                        ),
-                                        NotificationPriority::Error,
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
-                    }
+            // There's a current and a new state to compare and update.
+            (true, true) => {
+                if let Err(_) = self
+                    .state
+                    .as_mut()
+                    .unwrap()
+                    .update_existing_state_with_new_state(
+                        logger,
+                        new_chunk,
+                        new_last_contribution.unwrap(),
+                        ceremony_update,
+                        pending_verification_timeout,
+                        contribution_lock_timeout,
+                    )
+                    .await
+                {
+                    // This means there is no contributor so we simply reset the current value.
+                    self.reset_state(logger, &new_chunk.unique_chunk_id).await;
                 }
-
-                // Replace the current value.
-                *self = new_chunk_state;
             }
-            (ChunkState::EmptyState(), None) => {}
-        };
+        }
 
         Ok(())
+    }
+
+    async fn reset_state(&mut self, logger: &Logger, unique_chunk_id: &UniqueChunkId) {
+        if let Some(ref state) = self.state {
+            state.log_reset(logger, unique_chunk_id).await;
+        }
+
+        self.state = None;
     }
 }
 
@@ -189,7 +321,7 @@ impl SetupContributionState {
     pub fn new(num_chunks: usize) -> Self {
         Self {
             finished: false,
-            chunks_state: vec![ChunkState::EmptyState(); num_chunks],
+            chunks_state: vec![ChunkState::default(); num_chunks],
         }
     }
 

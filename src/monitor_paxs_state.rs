@@ -29,16 +29,26 @@ impl ParticipantState {
         self.contributed_chunks_counter = 0;
     }
 
-    fn update_participant_contributions_state(
+    async fn update_participant_contributions_state(
         &mut self,
         unique_chunk_id: &UniqueChunkId,
         contribution_time: DateTime<Utc>,
+        contributor_id: &PublicKey,
+        logger: &Logger,
     ) {
         if self.last_contribution.1 < contribution_time {
             self.last_contribution = (unique_chunk_id.clone(), contribution_time);
+            if self.is_stuck {
+                logger
+                    .log_and_notify_slack(
+                        format!("Participant got unstuck! {}", contributor_id),
+                        NotificationPriority::Resolved,
+                    )
+                    .await;
+            }
+            self.is_stuck = false;
         }
         self.contributed_chunks_counter += 1;
-        self.is_stuck = false;
     }
 
     fn is_finished_contributing(&self, total_chunks: usize) -> bool {
@@ -103,10 +113,14 @@ impl ParticipantsContributionState {
                 self.current_participants_state.get_mut(&contributor_id)
             {
                 // Update last contribution.
-                participant_state.update_participant_contributions_state(
-                    &new_chunk.unique_chunk_id,
-                    contribution_time,
-                );
+                participant_state
+                    .update_participant_contributions_state(
+                        &new_chunk.unique_chunk_id,
+                        contribution_time,
+                        &contributor_id,
+                        logger,
+                    )
+                    .await;
             } else {
                 // When it's the first one we insert it and log it.
                 self.current_participants_state.insert(
@@ -118,7 +132,7 @@ impl ParticipantsContributionState {
                 );
                 logger
                     .log_and_notify_slack(
-                        &format!("New participant started contributing! {}", contributor_id),
+                        format!("New participant started contributing! {}", contributor_id),
                         NotificationPriority::Info,
                     )
                     .await;
@@ -134,7 +148,7 @@ impl ParticipantsContributionState {
         total_chunks: usize,
         logger: &Logger,
         ceremony_update: DateTime<Utc>,
-        contribution_timeout: Duration,
+        same_contribution_timeout: Duration,
     ) {
         for participant_id in participant_ids.iter() {
             let old_state = self.last_ceremony_version_state.get(participant_id);
@@ -147,16 +161,15 @@ impl ParticipantsContributionState {
                         let elapse = ceremony_update - new_state.last_contribution.1;
                         if !old_state.is_stuck
                             && new_state.last_contribution == old_state.last_contribution
-                            && elapse >= contribution_timeout
+                            && elapse >= same_contribution_timeout
                         {
                             new_state.is_stuck = true;
                             logger
                                 .log_and_notify_slack(
-                                    &format!(
-                                        "Participant {} is stuck for {}min {}s!",
+                                    format!(
+                                        "Participant {} is stuck for {}min!",
                                         participant_id,
-                                        elapse.num_minutes(),
-                                        elapse.num_seconds()
+                                        elapse.num_minutes()
                                     ),
                                     NotificationPriority::Warning,
                                 )
@@ -167,11 +180,11 @@ impl ParticipantsContributionState {
                         if !old_state.is_finished_contributing(total_chunks) {
                             logger
                                 .log_and_notify_slack(
-                                    &format!(
+                                    format!(
                                         "Participant finished contributing! {}",
                                         participant_id
                                     ),
-                                    NotificationPriority::Info,
+                                    NotificationPriority::Resolved,
                                 )
                                 .await;
                         }
@@ -182,8 +195,8 @@ impl ParticipantsContributionState {
                     if new_state.is_finished_contributing(total_chunks) {
                         logger
                             .log_and_notify_slack(
-                                &format!("Participant finished contributing! {}", participant_id),
-                                NotificationPriority::Info,
+                                format!("Participant finished contributing! {}", participant_id),
+                                NotificationPriority::Resolved,
                             )
                             .await;
                     }
