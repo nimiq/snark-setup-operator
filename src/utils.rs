@@ -228,7 +228,13 @@ pub async fn get_content_length(url: &str) -> Result<u64> {
 }
 
 pub async fn get_ceremony(url: &str) -> Result<Ceremony> {
-    let response = reqwest::get(url).await?.error_for_status()?;
+    let response = reqwest::Client::builder()
+        .zstd(true)
+        .build()?
+        .get(url)
+        .send();
+
+    let response = response.await?.error_for_status()?;
     let data = response.text().await?;
     let ceremony: Ceremony = serde_json::from_str::<Response<Ceremony>>(&data)?.result;
     Ok(ceremony)
