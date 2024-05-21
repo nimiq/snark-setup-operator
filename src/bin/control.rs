@@ -48,12 +48,20 @@ use tracing::info;
 use url::Url;
 
 #[derive(Debug, Options, Clone)]
+pub struct ChangeParticipantKeyOpts {
+    help: bool,
+    #[options(help = "old participant ID", required)]
+    pub old_participant_id: ParticipantId,
+    #[options(help = "new participant ID", required)]
+    pub new_participant_id: ParticipantId,
+}
+
+#[derive(Debug, Options, Clone)]
 pub struct AddParticipantOpts {
     help: bool,
     #[options(help = "participant ID", required)]
     pub participant_id: ParticipantId,
 }
-
 #[derive(Debug, Options, Clone)]
 pub struct RemoveParticipantOpts {
     help: bool,
@@ -205,6 +213,7 @@ impl Phase2Opts {
 #[derive(Debug, Options, Clone)]
 pub enum Command {
     #[options(help = "adds a participant")]
+    ChangeParticipantKey(ChangeParticipantKeyOpts),
     AddParticipant(AddParticipantOpts),
     RemoveParticipant(RemoveParticipantOpts),
     AddVerifier(AddParticipantOpts),
@@ -254,6 +263,49 @@ impl Control {
             phase2_opts,
         };
         Ok(control)
+    }
+
+    async fn change_participant_key(
+        &self,
+        old_participant_id: ParticipantId,
+        new_participant_id: ParticipantId,
+    ) -> Result<()> {
+        let change_pax_key_path =
+            format!("change-key/{}/{}", old_participant_id, new_participant_id);
+        let change_pax_key_url = self.server_url.join(&change_pax_key_path)?;
+
+        let mut ceremony = self.get_ceremony().await?;
+        if !ceremony.contributor_ids.contains(&old_participant_id) {
+            return Err(ControlError::ParticipantDoesNotExistError(
+                new_participant_id.clone(),
+                ceremony.contributor_ids.clone(),
+            )
+            .into());
+        }
+        if ceremony.contributor_ids.contains(&new_participant_id) {
+            return Err(ControlError::ParticipantAlreadyExistsError(
+                new_participant_id.clone(),
+                ceremony.contributor_ids.clone(),
+            )
+            .into());
+        }
+
+        let client = reqwest::Client::new();
+        let authorization =
+            get_authorization_value(&self.private_key, "POST", &change_pax_key_path)?;
+        client
+            .post(change_pax_key_url)
+            .header(AUTHORIZATION, authorization)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        ceremony
+            .contributor_ids
+            .iter_mut()
+            .filter(|participant_id| **participant_id == old_participant_id)
+            .for_each(|x| *x = new_participant_id);
+        Ok(())
     }
 
     async fn add_participant(&self, participant_id: ParticipantId) -> Result<()> {
@@ -985,6 +1037,10 @@ async fn main() {
     });
 
     (match command {
+        Command::ChangeParticipantKey(opts) => control
+            .change_participant_key(opts.old_participant_id, opts.new_participant_id)
+            .await
+            .expect("Should have run command successfully"),
         Command::AddParticipant(opts) => control
             .add_participant(opts.participant_id)
             .await
