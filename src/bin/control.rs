@@ -79,10 +79,8 @@ pub struct SignalShutdownOpts {
 #[derive(Debug, Options, Clone)]
 pub struct UnlockParticipantOpts {
     help: bool,
-    #[options(help = "participant ID")]
-    pub participant_id: Option<ParticipantId>,
-    #[options(help = "all participants")]
-    pub all: bool,
+    #[options(help = "participant ID", required)]
+    pub participant_id: ParticipantId,
 }
 
 #[derive(Debug, Options, Clone)]
@@ -444,8 +442,18 @@ impl Control {
     }
 
     /// If no participant ID is given, we unlock all.
-    async fn unlock_participant(&self, participant_id: Option<ParticipantId>) -> Result<()> {
+    async fn unlock_participant_chunks(&self, participant_id: ParticipantId) -> Result<()> {
+        let client = reqwest::Client::new();
         let mut ceremony = self.get_ceremony().await?;
+
+        if !ceremony.contributor_ids.contains(&participant_id) {
+            return Err(ControlError::ParticipantDoesNotExistError(
+                participant_id.clone(),
+                ceremony.contributor_ids.clone(),
+            )
+            .into());
+        }
+
         let chunk_ids = ceremony
             .setups
             .iter_mut()
@@ -454,7 +462,7 @@ impl Control {
                     .chunks
                     .iter_mut()
                     .filter_map(|c| {
-                        if participant_id.is_none() || c.lock_holder == participant_id {
+                        if c.lock_holder == Some(participant_id) {
                             c.lock_holder = None;
                             Some(c.unique_chunk_id.clone())
                         } else {
@@ -464,8 +472,27 @@ impl Control {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+
+        for chunk_id in chunk_ids.iter() {
+            let unlock_chunk_from_pax_key_path =
+                format!("unlock-chunk/{}/{}", chunk_id, participant_id);
+            let unlock_chunk_from_pax_url =
+                self.server_url.join(&unlock_chunk_from_pax_key_path)?;
+            let authorization = get_authorization_value(
+                &self.private_key,
+                "POST",
+                &unlock_chunk_from_pax_key_path,
+            )?;
+
+            client
+                .post(unlock_chunk_from_pax_url)
+                .header(AUTHORIZATION, authorization)
+                .send()
+                .await?
+                .error_for_status()?;
+        }
+
         info!("chunk IDs unlocked: {:?}", chunk_ids);
-        self.put_ceremony(&ceremony).await?;
         Ok(())
     }
 
@@ -1061,16 +1088,10 @@ async fn main() {
             .signal_shutdown(opts.shutdown_signal)
             .await
             .expect("Should have run command successfully"),
-        Command::UnlockParticipantChunks(opts) => {
-            // Make sure options are not in conflict.
-            if opts.all == opts.participant_id.is_some() {
-                panic!("Requires either a participant ID or the `all` option.");
-            }
-            control
-                .unlock_participant(opts.participant_id)
-                .await
-                .expect("Should have run command successfully")
-        }
+        Command::UnlockParticipantChunks(opts) => control
+            .unlock_participant_chunks(opts.participant_id)
+            .await
+            .expect("Should have run command successfully"),
         Command::NewRound(opts) => control
             .new_round(
                 &opts.expected_participant,
