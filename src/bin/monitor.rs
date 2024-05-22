@@ -61,6 +61,14 @@ pub struct RoundState {
 }
 
 impl RoundState {
+    pub fn get_num_setups(&self) -> usize {
+        if self.setups_contribution_state.is_empty() {
+            return 0;
+        }
+
+        self.setups_contribution_state.len() - 1
+    }
+
     fn init(&mut self, ceremony: &Ceremony) {
         *self = Self::default();
         ceremony.setups.iter().for_each(|setup| {
@@ -131,23 +139,34 @@ impl RoundState {
 
         // If we never notified that the round is complete before, we announce it now.
         if !self.is_round_complete() {
-            logger
-                .log_and_notify_slack(
-                    format!("Round {}: All setups are complete!", self.round),
-                    NotificationPriority::Info,
-                )
-                .await;
+            if !ceremony.contributor_ids.is_empty() {
+                logger
+                    .log_and_notify_slack(
+                        format!("Round {}: All setups are complete!", self.round),
+                        NotificationPriority::Info,
+                    )
+                    .await;
+            }
         }
 
         // Sets new round and resets the state of each setup and participant.
         self.init(ceremony);
 
-        logger
-            .log_and_notify_slack(
-                format!("Round {} started!", self.round),
-                NotificationPriority::Info,
-            )
-            .await;
+        if ceremony.round == 0 && ceremony.contributor_ids.is_empty() {
+            logger
+                .log_and_notify_slack(
+                    format!("Setting up round. Setup {} done", self.get_num_setups()),
+                    NotificationPriority::Info,
+                )
+                .await;
+        } else {
+            logger
+                .log_and_notify_slack(
+                    format!("Round {} started!", self.round),
+                    NotificationPriority::Info,
+                )
+                .await;
+        }
     }
 
     async fn check_for_verifiers_bottleneck(
@@ -304,12 +323,14 @@ impl RoundState {
             self.check_for_verifiers_bottleneck(logger, verification_timeout_count)
                 .await;
         } else {
-            logger
-                .log_and_notify_slack(
-                    format!("Round {}: All setups are complete!", self.round),
-                    NotificationPriority::Info,
-                )
-                .await;
+            if !ceremony.contributor_ids.is_empty() {
+                logger
+                    .log_and_notify_slack(
+                        format!("Round {}: All setups are complete!", self.round),
+                        NotificationPriority::Info,
+                    )
+                    .await;
+            }
         }
 
         Ok(())
