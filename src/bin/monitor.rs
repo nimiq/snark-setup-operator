@@ -184,7 +184,7 @@ impl RoundState {
             (_, true) => {
                 // If it's the first detection we will always log. Otherwise we only log if the situation is aggravating.
                 if new_pending_verification_percentage
-                    >= self.previous_pending_verification_percentage + 0.25
+                    >= self.previous_pending_verification_percentage + 0.15
                 {
                     let ongoing_contributions_count = self
                         .paxs_contribution_state
@@ -193,7 +193,7 @@ impl RoundState {
                     logger
                     .log_and_notify_slack(
                         format!(
-                            "Verifiers bottleneck detected! There's {} ongoing contributions. {}% chunks pending verification ({}/{}).",
+                            "Verifiers congestion detected! There's {} ongoing contributions. {}% chunks pending verification ({}/{}).",
                             ongoing_contributions_count,
                             new_pending_verification_percentage*100.0,
                             verification_timeout_counter,self.total_chunks
@@ -212,7 +212,7 @@ impl RoundState {
                 logger
                     .log_and_notify_slack(
                         format!(
-                            "Verifiers bottleneck solved! {}% chunks pending verification ({}/{}).",
+                            "Verifiers congestions solved! {}% chunks pending verification ({}/{}).",
                             new_pending_verification_percentage * 100.0,
                             verification_timeout_counter,
                             self.total_chunks
