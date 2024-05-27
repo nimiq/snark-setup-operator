@@ -20,7 +20,7 @@ use setup_utils::{
     DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS, DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
 };
 use snark_setup_operator::data_structs::{
-    Chunk, ChunkMetadata, Contribution, ContributionMetadata, ParticipantId, Setup,
+    Chunk, ChunkMetadata, Contribution, ContributionMetadata, ParticipantId, Response, Setup,
 };
 use snark_setup_operator::error::{NewRoundError, VerifyTranscriptError};
 use snark_setup_operator::utils::{
@@ -58,6 +58,13 @@ pub struct ChangeParticipantKeyOpts {
 
 #[derive(Debug, Options, Clone)]
 pub struct AddParticipantOpts {
+    help: bool,
+    #[options(help = "participant ID", required)]
+    pub participant_id: Vec<ParticipantId>,
+}
+
+#[derive(Debug, Options, Clone)]
+pub struct AddVerifierOpts {
     help: bool,
     #[options(help = "participant ID", required)]
     pub participant_id: ParticipantId,
@@ -127,6 +134,11 @@ pub struct GetLastContributionPkOpts {
     pub setup_index: usize,
     #[options(help = "chunk index")]
     pub chunk_index: usize,
+}
+
+#[derive(Debug, Options, Clone)]
+pub struct GetNumberOfSetups {
+    help: bool,
 }
 
 #[derive(Debug, Options, Clone)]
@@ -214,7 +226,7 @@ pub enum Command {
     ChangeParticipantKey(ChangeParticipantKeyOpts),
     AddParticipant(AddParticipantOpts),
     RemoveParticipant(RemoveParticipantOpts),
-    AddVerifier(AddParticipantOpts),
+    AddVerifier(AddVerifierOpts),
     RemoveVerifier(RemoveParticipantOpts),
     UnlockParticipantChunks(UnlockParticipantOpts),
     SignalShutdown(SignalShutdownOpts),
@@ -222,6 +234,7 @@ pub enum Command {
     ApplyBeacon(ApplyBeaconOpts),
     RemoveLastContribution(RemoveLastContributionOpts),
     GetLastContributionPk(GetLastContributionPkOpts),
+    GetNumberOfSetups(GetNumberOfSetups),
 }
 
 pub struct Control {
@@ -306,18 +319,14 @@ impl Control {
         Ok(())
     }
 
-    async fn add_participant(&self, participant_id: ParticipantId) -> Result<()> {
+    async fn add_participant(&self, participant_ids: &mut Vec<ParticipantId>) -> Result<()> {
         let mut ceremony = self.get_ceremony().await?;
-        if ceremony.contributor_ids.contains(&participant_id) {
-            return Err(ControlError::ParticipantAlreadyExistsError(
-                participant_id.clone(),
-                ceremony.contributor_ids.clone(),
-            )
-            .into());
-        }
-        ceremony.contributor_ids.push(participant_id.clone());
-        info!("participants after adding: {:?}", ceremony.contributor_ids);
+
+        ceremony.contributor_ids.append(participant_ids);
+        info!("New contributors {:?}", ceremony.contributor_ids);
+
         self.put_ceremony(&ceremony).await?;
+
         Ok(())
     }
 
@@ -446,7 +455,9 @@ impl Control {
         let client = reqwest::Client::new();
         let mut ceremony = self.get_ceremony().await?;
 
-        if !ceremony.contributor_ids.contains(&participant_id) {
+        if !ceremony.contributor_ids.contains(&participant_id)
+            && !ceremony.verifier_ids.contains(&participant_id)
+        {
             return Err(ControlError::ParticipantDoesNotExistError(
                 participant_id.clone(),
                 ceremony.contributor_ids.clone(),
@@ -994,6 +1005,9 @@ impl Control {
 
         Ok(participant_id_from_chunk)
     }
+    async fn get_setups_number(&self) -> Result<usize> {
+        Ok(self.get_ceremony().await?.setups.len())
+    }
 
     async fn remove_last_contribution(
         &self,
@@ -1069,7 +1083,7 @@ async fn main() {
             .await
             .expect("Should have run command successfully"),
         Command::AddParticipant(opts) => control
-            .add_participant(opts.participant_id)
+            .add_participant(&mut opts.participant_id.clone())
             .await
             .expect("Should have run command successfully"),
         Command::RemoveParticipant(opts) => control
@@ -1120,6 +1134,14 @@ async fn main() {
                 .expect("Should have run command successfully");
 
             println!("Public key: {}", pk);
+        }
+        Command::GetNumberOfSetups(_opts) => {
+            let n_setups = control
+                .get_setups_number()
+                .await
+                .expect("Should have run command successfully");
+
+            println!("{}", n_setups);
         }
     });
 }
