@@ -20,7 +20,7 @@ use setup_utils::{
     DEFAULT_VERIFY_CHECK_INPUT_CORRECTNESS, DEFAULT_VERIFY_CHECK_OUTPUT_CORRECTNESS,
 };
 use snark_setup_operator::data_structs::{
-    Chunk, ChunkMetadata, Contribution, ContributionMetadata, ParticipantId, Response, Setup,
+    Chunk, ChunkMetadata, Contribution, ContributionMetadata, ParticipantId, Setup,
 };
 use snark_setup_operator::error::{NewRoundError, VerifyTranscriptError};
 use snark_setup_operator::utils::{

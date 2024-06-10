@@ -524,7 +524,8 @@ impl Contribute {
                 progress_bar.set_message(
                     "Don't turn this off yet, you are needed until the end of your round.",
                 );
-            } else {
+            } else if !matches!(self.participation_mode, ParticipationMode::Verify) {
+                // We don't want the verifiers to be killed.
                 progress_bar.set_message("\nSuccessfully contributed!");
                 progress_bar.finish();
 
