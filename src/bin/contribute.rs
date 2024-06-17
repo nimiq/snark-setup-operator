@@ -399,7 +399,7 @@ impl Contribute {
             let progress_bar_for_thread = progress_bar.clone();
             let jh = tokio::spawn(async move {
                 loop {
-                    let result = cloned.run().await;
+                    let result = cloned.run(&progress_bar_for_thread).await;
                     if EXITING.load(SeqCst) {
                         return;
                     }
@@ -1080,7 +1080,7 @@ impl Contribute {
         .to_string();
     }
 
-    async fn run(&mut self) -> Result<()> {
+    async fn run(&mut self, progress_bar: &ProgressBar) -> Result<()> {
         loop {
             self.lock_chunk = false;
             self.wait_for_available_spot_in_lane(&PipelineLane::Download)
@@ -1219,7 +1219,7 @@ impl Contribute {
                 &unique_chunk_id,
             )
             .await?;
-            let upload_url = self.get_upload_url(&unique_chunk_id).await?;
+            let upload_url = self.get_upload_url(&unique_chunk_id, progress_bar).await?;
             let authorization = get_authorization_value(
                 &self.key_pair,
                 "POST",
@@ -1247,8 +1247,12 @@ impl Contribute {
                 data: contributed_or_verified_data,
             };
 
-            self.notify_contribution(&unique_chunk_id, serde_json::to_value(signed_data)?)
-                .await?;
+            self.notify_contribution(
+                &unique_chunk_id,
+                serde_json::to_value(signed_data)?,
+                progress_bar,
+            )
+            .await?;
 
             self.remove_chunk_id_from_lane_if_exists(&PipelineLane::Upload, &unique_chunk_id)?;
             self.set_status_update_signal();
@@ -1408,7 +1412,11 @@ impl Contribute {
         Ok(())
     }
 
-    async fn get_upload_url(&self, unique_chunk_id: &UniqueChunkId) -> Result<String> {
+    async fn get_upload_url(
+        &self,
+        unique_chunk_id: &UniqueChunkId,
+        progress_bar: &ProgressBar,
+    ) -> Result<String> {
         let upload_request_path = format!("chunks/{}/contribution", unique_chunk_id);
         let upload_request_url = self.server_url.join(&upload_request_path)?;
         let client = reqwest::Client::new();
@@ -1421,6 +1429,7 @@ impl Contribute {
             .await;
         if let Err(e) = temp.as_ref() {
             error!("Get upload url {:?}", e);
+            progress_bar.println(&format!("Got error from ceremony initialization: {}", e));
         }
         let response: Response<ContributionUploadUrl> = temp?.error_for_status()?.json().await?;
 
@@ -1431,6 +1440,7 @@ impl Contribute {
         &self,
         unique_chunk_id: &UniqueChunkId,
         body: serde_json::Value,
+        progress_bar: &ProgressBar,
     ) -> Result<()> {
         let notify_path = format!("chunks/{}/contribution", unique_chunk_id);
         let notify_url = self.server_url.join(&notify_path)?;
@@ -1444,6 +1454,7 @@ impl Contribute {
             .await;
         if let Err(e) = temp.as_ref() {
             error!("Notify contribution {:?}", e);
+            progress_bar.println(&format!("Notify contribution {:?}", e));
             temp?.error_for_status()?;
         }
 
