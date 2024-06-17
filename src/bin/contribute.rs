@@ -1413,15 +1413,17 @@ impl Contribute {
         let upload_request_url = self.server_url.join(&upload_request_path)?;
         let client = reqwest::Client::new();
         let authorization = get_authorization_value(&self.key_pair, "GET", &upload_request_path)?;
-        let response: Response<ContributionUploadUrl> = client
+        let temp = client
             .get(upload_request_url.as_str())
             .header(AUTHORIZATION, authorization)
             .header(CONTENT_LENGTH, 0)
             .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+            .await;
+        if let Err(e) = temp.as_ref() {
+            error!("Get upload url {:?}", e);
+        }
+        let response: Response<ContributionUploadUrl> = temp?.error_for_status()?.json().await?;
+
         Ok(response.result.write_url)
     }
 
@@ -1434,13 +1436,17 @@ impl Contribute {
         let notify_url = self.server_url.join(&notify_path)?;
         let client = reqwest::Client::new();
         let authorization = get_authorization_value(&self.key_pair, "POST", &notify_path)?;
-        client
+        let temp = client
             .post(notify_url.as_str())
             .header(AUTHORIZATION, authorization)
             .json(&body)
             .send()
-            .await?
-            .error_for_status()?;
+            .await;
+        if let Err(e) = temp.as_ref() {
+            error!("Notify contribution {:?}", e);
+            temp?.error_for_status()?;
+        }
+
         Ok(())
     }
 
