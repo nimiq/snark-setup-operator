@@ -196,8 +196,9 @@ pub struct Contribute {
 
     task_index: Option<usize>,
 
-    // This is the only mutable state we hold.
+    // This is the only mutable states we hold.
     pub chosen_unique_chunk_id: Option<UniqueChunkId>,
+    pub lock_chunk: bool,
 }
 
 impl Contribute {
@@ -236,6 +237,7 @@ impl Contribute {
             task_index: None,
 
             chosen_unique_chunk_id: None,
+            lock_chunk: false,
         };
         Ok(contribute_params)
     }
@@ -415,8 +417,12 @@ impl Contribute {
                                     )
                                     .expect("Should have removed chunk ID from lane")
                                 {
-                                    let _ =
-                                        cloned.unlock_chunk(&chunk_id, Some(e.to_string())).await;
+                                    // ITODO
+                                    if cloned.lock_chunk {
+                                        let _ = cloned
+                                            .unlock_chunk(&chunk_id, Some(e.to_string()))
+                                            .await;
+                                    }
                                 }
                                 if cloned
                                     .remove_chunk_id_from_lane_if_exists(
@@ -425,8 +431,11 @@ impl Contribute {
                                     )
                                     .expect("Should have removed chunk ID from lane")
                                 {
-                                    let _ =
-                                        cloned.unlock_chunk(&chunk_id, Some(e.to_string())).await;
+                                    if cloned.lock_chunk {
+                                        let _ = cloned
+                                            .unlock_chunk(&chunk_id, Some(e.to_string()))
+                                            .await;
+                                    }
                                 }
                                 if cloned
                                     .remove_chunk_id_from_lane_if_exists(
@@ -435,8 +444,11 @@ impl Contribute {
                                     )
                                     .expect("Should have removed chunk ID from lane")
                                 {
-                                    let _ =
-                                        cloned.unlock_chunk(&chunk_id, Some(e.to_string())).await;
+                                    if cloned.lock_chunk {
+                                        let _ = cloned
+                                            .unlock_chunk(&chunk_id, Some(e.to_string()))
+                                            .await;
+                                    }
                                 }
                                 cloned.set_status_update_signal();
                             }
@@ -1070,6 +1082,7 @@ impl Contribute {
 
     async fn run(&mut self) -> Result<()> {
         loop {
+            self.lock_chunk = false;
             self.wait_for_available_spot_in_lane(&PipelineLane::Download)
                 .await?;
             let chunk_info = self.get_chunk_info().await?;
@@ -1124,6 +1137,7 @@ impl Contribute {
             }
             self.chosen_unique_chunk_id = Some(unique_chunk_id.clone());
             self.lock_chunk(&unique_chunk_id).await?;
+            self.lock_chunk = true;
             self.set_status_update_signal();
 
             // Get parameters.
