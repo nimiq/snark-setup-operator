@@ -417,7 +417,6 @@ impl Contribute {
                                     )
                                     .expect("Should have removed chunk ID from lane")
                                 {
-                                    // ITODO
                                     if cloned.lock_chunk {
                                         let _ = cloned
                                             .unlock_chunk(&chunk_id, Some(e.to_string()))
