@@ -106,3 +106,32 @@ echo 1 | RUST_LOG=info cargo run --release --bin control -- -i new_challenge.que
 RUST_LOG=info cargo run --release --bin verify_transcript -- --circuit-filenames circuit_mnt4_753 --circuit-filenames circuit_mnt6_753 --beacon-hash 0000000000000000000000000000000000000000000000000000000000000000 -i new_challenge.query -I new_challenge.full
 
 RUST_LOG=info cargo run --release --bin get_keys
+
+tar -czvf keys.tar.gz *.bin
+
+mkdir .zkp_keys_mainnet
+mkdir .zkp_keys_mainnet/proving_keys
+mkdir .zkp_keys_mainnet/verifying_keys
+
+mv setup0_proving_key.bin .zkp_keys_mainnet/proving_keys/macro_block.bin
+mv setup1_proving_key.bin .zkp_keys_mainnet/proving_keys/merger.bin
+mv setup2_proving_key.bin .zkp_keys_mainnet/proving_keys/pk_tree_1.bin
+mv setup3_proving_key.bin .zkp_keys_mainnet/proving_keys/pk_tree_3.bin
+mv setup4_proving_key.bin .zkp_keys_mainnet/proving_keys/pk_tree_5.bin
+mv setup5_proving_key.bin .zkp_keys_mainnet/proving_keys/macro_block_wrapper.bin
+mv setup6_proving_key.bin .zkp_keys_mainnet/proving_keys/merger_wrapper.bin
+mv setup7_proving_key.bin .zkp_keys_mainnet/proving_keys/pk_tree_0.bin
+mv setup8_proving_key.bin .zkp_keys_mainnet/proving_keys/pk_tree_2.bin
+mv setup9_proving_key.bin .zkp_keys_mainnet/proving_keys/pk_tree_4.bin
+
+mv setup0_verifying_key.bin .zkp_keys_mainnet/verifying_keys/macro_block.bin
+mv setup1_verifying_key.bin .zkp_keys_mainnet/verifying_keys/merger.bin
+mv setup2_verifying_key.bin .zkp_keys_mainnet/verifying_keys/pk_tree_1.bin
+mv setup3_verifying_key.bin .zkp_keys_mainnet/verifying_keys/pk_tree_3.bin
+mv setup4_verifying_key.bin .zkp_keys_mainnet/verifying_keys/pk_tree_5.bin
+mv setup5_verifying_key.bin .zkp_keys_mainnet/verifying_keys/macro_block_wrapper.bin
+mv setup6_verifying_key.bin .zkp_keys_mainnet/verifying_keys/merger_wrapper.bin
+mv setup7_verifying_key.bin .zkp_keys_mainnet/verifying_keys/pk_tree_0.bin
+mv setup8_verifying_key.bin .zkp_keys_mainnet/verifying_keys/pk_tree_2.bin
+mv setup9_verifying_key.bin .zkp_keys_mainnet/verifying_keys/pk_tree_4.bin
+
